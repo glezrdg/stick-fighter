@@ -54,14 +54,15 @@ export const CURRENT_SAVE_VERSION = 1
 export const SaveCurrent = SaveV1
 export type SaveCurrent = SaveV1
 
-/** Default save for a brand-new player. */
+/** Default save for a brand-new player. Starts them with dash + kiBlast
+ *  equipped so the Q/E HUD slots are usable on first boot. */
 export const defaultSave = (): SaveV1 => ({
   v: 1,
   gold: 0,
   gems: 30,
   bestWave: 0,
   totalKills: 0,
-  skills: { owned: [], equipped: [] },
+  skills: { owned: ['dash', 'kiBlast'], equipped: ['dash', 'kiBlast'] },
   cosmetics: {
     char: { owned: ['default'], equipped: 'default' },
     sword: { owned: ['katana'], equipped: 'katana' },
