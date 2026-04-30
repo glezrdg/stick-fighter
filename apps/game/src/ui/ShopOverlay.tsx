@@ -24,11 +24,21 @@ type Tab = 'weapons' | 'skills' | 'auras'
 export const ShopOverlay: Component<ShopOverlayProps> = (props) => {
   const [open, setOpen] = createSignal(false)
   const [tab, setTab] = createSignal<Tab>('weapons')
-  const [, setRev] = createSignal(0)
+  const [rev, setRev] = createSignal(0)
+
+  /** Reactive accessor — touches `rev` so Solid re-runs anything that reads
+   *  this whenever `persist()` bumps the version. The legacy bug: rev was
+   *  set but never read, so save mutations didn't refresh the UI. */
+  const save = () => {
+    rev()
+    return props.getSave()
+  }
 
   const persist = () => {
-    setRev((r) => r + 1)
     void props.saveStore.save(props.getSave())
+    setRev((r) => r + 1)
+    // Also broadcast on the bus so the menu / HUD reflects the new gold.
+    props.bus.emit('gold:changed', { gold: props.getSave().gold, delta: 0 })
   }
 
   const offOpen = props.bus.on('ui:shop:open', () => setOpen(true))
@@ -167,8 +177,8 @@ export const ShopOverlay: Component<ShopOverlayProps> = (props) => {
               'text-shadow': '1px 1px 0 #000',
             }}
           >
-            <span style={{ color: '#ffd54a' }}>🪙 {props.getSave().gold}</span>
-            <span style={{ color: '#9c80ff' }}>💎 {props.getSave().gems}</span>
+            <span style={{ color: '#ffd54a' }}>🪙 {save().gold}</span>
+            <span style={{ color: '#9c80ff' }}>💎 {save().gems}</span>
           </div>
           <button
             type="button"
@@ -237,7 +247,10 @@ export const ShopOverlay: Component<ShopOverlayProps> = (props) => {
           <Show when={tab() === 'weapons'}>
             <For each={weapons}>
               {(w) => {
-                const save = () => props.getSave()
+                const save = () => {
+                  rev()
+                  return props.getSave()
+                }
                 const owned = () => save().cosmetics.sword.owned.includes(w.id)
                 const equipped = () => save().cosmetics.sword.equipped === w.id
                 const level = () => save().weaponLevels[w.id] ?? 1
@@ -256,8 +269,21 @@ export const ShopOverlay: Component<ShopOverlayProps> = (props) => {
                       onClick={() => buyOrUpgradeWeapon(w)}
                       disabled={!canAfford() || (owned() && level() >= 20)}
                       style={shopBtn(canAfford() && !(owned() && level() >= 20))}
+                      title={
+                        owned() && level() >= 20
+                          ? 'Nivel máximo'
+                          : !canAfford()
+                            ? `Te faltan 🪙${cost() - save().gold}`
+                            : ''
+                      }
                     >
-                      {owned() ? `MEJORAR 🪙${cost()}` : `COMPRAR 🪙${cost()}`}
+                      {owned() && level() >= 20
+                        ? 'MAX'
+                        : !canAfford()
+                          ? `🪙-${cost() - save().gold}`
+                          : owned()
+                            ? `MEJORAR 🪙${cost()}`
+                            : `COMPRAR 🪙${cost()}`}
                     </button>
                     <Show when={owned() && !equipped()}>
                       <button
@@ -277,7 +303,10 @@ export const ShopOverlay: Component<ShopOverlayProps> = (props) => {
           <Show when={tab() === 'skills'}>
             <For each={allSkills()}>
               {(s) => {
-                const save = () => props.getSave()
+                const save = () => {
+                  rev()
+                  return props.getSave()
+                }
                 const owned = () => save().skills.owned.includes(s.id)
                 const equipped = () => save().skills.equipped.includes(s.id)
                 const canAfford = () => save().gold >= s.cost
@@ -307,8 +336,9 @@ export const ShopOverlay: Component<ShopOverlayProps> = (props) => {
                         onClick={() => buySkill(s.id, s.cost)}
                         disabled={!canAfford()}
                         style={shopBtn(canAfford())}
+                        title={!canAfford() ? `Te faltan 🪙${s.cost - save().gold}` : ''}
                       >
-                        COMPRAR 🪙{s.cost}
+                        {canAfford() ? `COMPRAR 🪙${s.cost}` : `🪙-${s.cost - save().gold}`}
                       </button>
                     </Show>
                   </ShopRow>
@@ -320,7 +350,10 @@ export const ShopOverlay: Component<ShopOverlayProps> = (props) => {
           <Show when={tab() === 'auras'}>
             <For each={auras}>
               {(a) => {
-                const save = () => props.getSave()
+                const save = () => {
+                  rev()
+                  return props.getSave()
+                }
                 const owned = () => save().cosmetics.aura.owned.includes(a.id)
                 const equipped = () => save().cosmetics.aura.equipped === a.id
                 const canAfford = () => (a.premium ? save().gems >= a.cost : save().gold >= a.cost)
@@ -354,9 +387,19 @@ export const ShopOverlay: Component<ShopOverlayProps> = (props) => {
                         onClick={() => buyAura(a)}
                         disabled={!canAfford()}
                         style={shopBtn(canAfford())}
+                        title={
+                          !canAfford()
+                            ? `Te faltan ${a.premium ? '💎' : '🪙'}${
+                                a.cost - (a.premium ? save().gems : save().gold)
+                              }`
+                            : ''
+                        }
                       >
-                        COMPRAR {a.premium ? '💎' : '🪙'}
-                        {a.cost}
+                        {canAfford()
+                          ? `COMPRAR ${a.premium ? '💎' : '🪙'}${a.cost}`
+                          : `${a.premium ? '💎' : '🪙'}-${
+                              a.cost - (a.premium ? save().gems : save().gold)
+                            }`}
                       </button>
                     </Show>
                   </ShopRow>

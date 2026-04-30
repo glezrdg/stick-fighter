@@ -20,8 +20,10 @@ export const ARROW_SPEED_PX_SEC = 720
 export const ARROW_DMG_MUL = 1.0
 /** Arrow projectile life in seconds. */
 const ARROW_LIFE_SEC = 1.6
-/** Arrow projectile collision radius. */
-const ARROW_RADIUS = 8
+/** Arrow projectile collision radius. Larger than enemy projectiles because
+ *  the arrow is a thin sliver visually — we want forgiving hit detection
+ *  so a player who clearly aimed at an enemy doesn't see whiffs. */
+const ARROW_RADIUS = 14
 /** Forward velocity boost applied at the start of each attack (px/frame at 60Hz).
  *  Per-kind, mirrors legacy line 1735 (kick=4.5, chop=3, spin=2, default=2.5). */
 const LUNGE_BY_KIND: Record<string, number> = {
@@ -248,27 +250,80 @@ export class CombatSystem {
     if (player.bowCooldown > 0) return false
     if (player.attackTimer > 0) return false // can't shoot while mid-melee
 
-    const aim = this.computeAimDirection(player, BOW_AUTO_AIM_RADIUS)
-    player.facingX = aim.x
-    player.facingY = aim.y
-    player.bowDirX = aim.x
-    player.bowDirY = aim.y
+    // Spawn at shoulder so the arrow appears to leave the bow visually.
+    const spawnX = player.x
+    const spawnY = player.y - 30
+
+    // Predictive auto-aim: lead the target by their velocity so a moving
+    // enemy doesn't sidestep the shot. Also aims at the shoulder height of
+    // the enemy (-30) so the trajectory connects with the visual hit zone.
+    const aim = this.computeBowAim(spawnX, spawnY)
+    player.facingX = aim.dirX
+    player.facingY = aim.dirY
+    player.bowDirX = aim.dirX
+    player.bowDirY = aim.dirY
     player.bowCooldown = BOW_COOLDOWN_SEC
     player.bowTimer = BOW_DURATION_SEC
     player.bowDuration = BOW_DURATION_SEC
 
     const dmg = this.getDmgMul() * ARROW_DMG_MUL
     this.onShoot?.({
-      x: player.x,
-      y: player.y - 30, // shoulder height (matches enemy projectile spawn)
-      dirX: aim.x,
-      dirY: aim.y,
+      x: spawnX,
+      y: spawnY,
+      dirX: aim.dirX,
+      dirY: aim.dirY,
       speed: ARROW_SPEED_PX_SEC,
       dmg,
       life: ARROW_LIFE_SEC,
       radius: ARROW_RADIUS,
     })
     return true
+  }
+
+  /**
+   * Auto-aim for the bow with predictive leading. Picks the closest enemy
+   * within BOW_AUTO_AIM_RADIUS, then computes the direction to the point
+   * where the enemy will be when the arrow arrives, accounting for their
+   * current velocity. Falls back to facing direction if no target.
+   */
+  private computeBowAim(
+    spawnX: number,
+    spawnY: number,
+  ): { dirX: number; dirY: number; targetX: number; targetY: number } {
+    const enemies = this.getEnemies?.()
+    if (!enemies) return { dirX: 1, dirY: 0, targetX: spawnX + 1, targetY: spawnY }
+
+    let best: EnemyTarget | undefined
+    let bestDistSq = BOW_AUTO_AIM_RADIUS * BOW_AUTO_AIM_RADIUS
+    for (const e of enemies) {
+      if (e.hp <= 0) continue
+      const dx = e.x - spawnX
+      const dy = e.y - spawnY
+      const d2 = dx * dx + dy * dy
+      if (d2 < bestDistSq) {
+        bestDistSq = d2
+        best = e
+      }
+    }
+    if (!best) return { dirX: 1, dirY: 0, targetX: spawnX + 1, targetY: spawnY }
+
+    // Target the enemy's shoulder, not their pelvis — matches arrow spawn Y.
+    const tx0 = best.x
+    const ty0 = best.y - 30
+    // Lead the target. First-order prediction: time to travel ≈ dist / speed.
+    // EnemyTarget doesn't carry vx/vy in the public type but Enemy does at
+    // runtime; read defensively so this stays safe for tests with minimal stubs.
+    const enemyAny = best as EnemyTarget & { vx?: number; vy?: number }
+    const vx = typeof enemyAny.vx === 'number' ? enemyAny.vx : 0
+    const vy = typeof enemyAny.vy === 'number' ? enemyAny.vy : 0
+    const dist0 = Math.hypot(tx0 - spawnX, ty0 - spawnY) || 1
+    const tof = dist0 / ARROW_SPEED_PX_SEC
+    const tx = tx0 + vx * tof
+    const ty = ty0 + vy * tof
+    const ddx = tx - spawnX
+    const ddy = ty - spawnY
+    const d = Math.hypot(ddx, ddy) || 1
+    return { dirX: ddx / d, dirY: ddy / d, targetX: tx, targetY: ty }
   }
 
   private computeAimDirection(player: Player, radius = AUTO_AIM_RADIUS): { x: number; y: number } {

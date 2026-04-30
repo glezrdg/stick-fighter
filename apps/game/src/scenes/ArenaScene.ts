@@ -144,6 +144,14 @@ export class ArenaScene extends BaseScene {
       bus: this.bus,
       // Player arrows collide against the live enemy list.
       getEnemies: () => this.waves.getEnemies(),
+      // Boss-sized enemies get a proportionally larger hit radius so arrows
+      // don't feel like they whiff against obvious targets.
+      getHitRadius: (e) => {
+        const enemy = e as { typeId?: string }
+        if (typeof enemy.typeId !== 'string') return 26
+        const type = getEnemyType(enemy.typeId)
+        return 26 * (type.scale ?? 1)
+      },
     })
     this.obstacleSys = new ObstacleSystem({ bus: this.bus, rng: this.rng })
     this.obstacleSys.generate()

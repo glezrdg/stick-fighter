@@ -6,7 +6,10 @@ import type { EventBus } from '../eventBus'
 const PLAYER_HIT_RADIUS = 18 // matches Player collision radius
 const PLAYER_IFRAME_SEC = 0.5
 const PLAYER_HURT_FLASH_SEC = 0.18
-const ENEMY_HIT_RADIUS_BASE = 18
+/** Enemy hit radius for player arrows. Tuned generously so a clearly-aimed
+ *  shot connects even if the enemy is moving — feels worse than melee on
+ *  whiffs because there's no swing animation to absolve a miss. */
+const ENEMY_HIT_RADIUS_BASE = 26
 const ENEMY_HURT_FLASH_SEC = 0.12
 
 /** Targets that arrows can collide with. Mirrors `EnemyTarget` from
@@ -33,10 +36,18 @@ export class ProjectileSystem {
   private readonly bus: EventBus
   private readonly projectiles: Projectile[] = []
   private readonly getEnemies: (() => Iterable<ArrowTarget>) | undefined
+  /** Per-enemy hit radius lookup. Lets the scene pass the visual scale of the
+   *  enemy type (boss > 1, ninja < 1) so arrows feel right against big units. */
+  private readonly getHitRadius: ((e: ArrowTarget) => number) | undefined
 
-  constructor(opts: { bus: EventBus; getEnemies?: () => Iterable<ArrowTarget> }) {
+  constructor(opts: {
+    bus: EventBus
+    getEnemies?: () => Iterable<ArrowTarget>
+    getHitRadius?: (e: ArrowTarget) => number
+  }) {
     this.bus = opts.bus
     this.getEnemies = opts.getEnemies
+    this.getHitRadius = opts.getHitRadius
   }
 
   spawn(opts: {
@@ -112,11 +123,15 @@ export class ProjectileSystem {
     if (!enemies) return undefined
     for (const e of enemies) {
       if (e.hp <= 0) continue
-      const enemyR = ENEMY_HIT_RADIUS_BASE * (e.scale ?? 1)
+      const enemyR = this.getHitRadius?.(e) ?? ENEMY_HIT_RADIUS_BASE * (e.scale ?? 1)
       const r = p.radius + enemyR
       const dx = e.x - p.x
       const dy = e.y - p.y
-      if (dx * dx + dy * dy <= r * r) return e
+      // Check center-of-mass too (arrow spawns at shoulder height, enemy
+      // pelvis is +30 below; expand the vertical hit window for that gap).
+      const dyShoulder = e.y - 30 - p.y
+      const distSq = Math.min(dx * dx + dy * dy, dx * dx + dyShoulder * dyShoulder)
+      if (distSq <= r * r) return e
     }
     return undefined
   }
