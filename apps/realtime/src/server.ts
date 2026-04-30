@@ -45,7 +45,11 @@ async function main() {
     }),
   })
 
-  gameServer.define('stick_fight', StickFightRoom)
+  // `filterBy` tells the Colyseus matchmaker to match rooms by their
+  // `lobbyCode` metadata when a client calls `.join('stick_fight', { lobbyCode })`.
+  // The host's `.create('stick_fight')` ignores this filter (no code passed),
+  // and the room's `onCreate` populates the metadata with a generated code.
+  gameServer.define('stick_fight', StickFightRoom).filterBy(['lobbyCode'])
 
   // Graceful shutdown for Docker SIGTERM.
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {

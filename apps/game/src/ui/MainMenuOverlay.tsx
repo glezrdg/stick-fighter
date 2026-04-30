@@ -8,6 +8,7 @@ import { type AuthState, AuthStore } from '../platform/authStore'
 
 import { AuthOverlay } from './AuthOverlay'
 import { LeaderboardPanel } from './LeaderboardPanel'
+import { LobbyOverlay } from './LobbyOverlay'
 
 interface MainMenuOverlayProps {
   bus: EventBus
@@ -29,6 +30,7 @@ export const MainMenuOverlay: Component<MainMenuOverlayProps> = (props) => {
   const [name, setName] = createSignal(props.getSave().playerName ?? '')
   const [nameError, setNameError] = createSignal<string | null>(null)
   const [authOpen, setAuthOpen] = createSignal(false)
+  const [lobbyOpen, setLobbyOpen] = createSignal(false)
   const [auth, setAuth] = createSignal<AuthState | null>(AuthStore.get())
 
   const offEnter = props.bus.on('ui:scene:enter', ({ name: scene }) => {
@@ -274,6 +276,7 @@ export const MainMenuOverlay: Component<MainMenuOverlayProps> = (props) => {
             }}
           >
             <PrimaryButton label="⚔ COMBATIR" onClick={startRun} />
+            <SecondaryButton label="👥 CO-OP MULTIJUGADOR" onClick={() => setLobbyOpen(true)} />
             <SecondaryButton
               label="🎨 TIENDA · SKINS"
               onClick={() => props.bus.emit('ui:shop:open', {})}
@@ -305,6 +308,7 @@ export const MainMenuOverlay: Component<MainMenuOverlayProps> = (props) => {
           persistName(displayName)
         }}
       />
+      <LobbyOverlay open={lobbyOpen} onClose={() => setLobbyOpen(false)} getSave={props.getSave} />
     </Show>
   )
 }

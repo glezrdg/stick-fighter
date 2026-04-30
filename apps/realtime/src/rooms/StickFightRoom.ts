@@ -1,4 +1,5 @@
 import { type Client, Room } from '@colyseus/core'
+import { ARENA, type Player, createPlayer, updateMovement } from '@stick/sim'
 import jwt from 'jsonwebtoken'
 
 import { PlayerState, WorldState } from '../schema/WorldState'
@@ -32,11 +33,22 @@ interface JoinOptions {
 const SIM_TICK_HZ = 30 // server-authoritative tick rate (33ms)
 const LOBBY_CODE_LEN = 4
 
+interface PlayerInputState {
+  /** Last move vector received (-1..1 each axis). */
+  moveX: number
+  moveY: number
+}
+
 export class StickFightRoom extends Room<WorldState> {
   override state = new WorldState()
   override maxClients = 2
   /** Set when the second player joins so we know not to advertise. */
   private isLocked = false
+
+  /** Authoritative sim entities, indexed by sessionId. The schema's
+   *  PlayerState mirrors a subset of these every tick. */
+  private readonly simPlayers = new Map<string, Player>()
+  private readonly inputs = new Map<string, PlayerInputState>()
 
   override onCreate(): void {
     this.state.lobbyCode = generateLobbyCode()
@@ -47,17 +59,27 @@ export class StickFightRoom extends Room<WorldState> {
 
     this.setSimulationInterval((dtMs) => this.tick(dtMs / 1000), 1000 / SIM_TICK_HZ)
 
-    // Phase 3a: a single lifecycle message until inputs land in 3b.
     this.onMessage('player:ready', (client) => {
       const p = this.state.players.get(client.sessionId)
       if (!p) return
       p.ready = true
-      // Both players ready → start.
       const all = Array.from(this.state.players.values())
       if (all.length >= 1 && all.every((q) => q.ready)) {
         this.state.phase = 'playing'
         this.state.seed = Math.floor(Math.random() * 0xffffffff)
       }
+    })
+
+    /**
+     * Movement input. Compact: both axes in -1..1, normalized to a unit
+     * vector before being applied to MovementSystem. Spam-tolerant — the
+     * server only consumes whatever it has at tick time, so the rate at
+     * which the client emits doesn't affect simulation determinism.
+     */
+    this.onMessage('input:move', (client, raw: unknown) => {
+      const input = parseMoveInput(raw)
+      if (!input) return
+      this.inputs.set(client.sessionId, input)
     })
 
     console.info(`[stick_fight] room ${this.roomId} created (lobby ${this.state.lobbyCode})`)
@@ -106,12 +128,23 @@ export class StickFightRoom extends Room<WorldState> {
   override onJoin(client: Client, _options: JoinOptions, auth: JoinAuth): void {
     if (auth === false) return
     const slot = this.state.players.size
+    const spawnX = slot === 0 ? ARENA.width / 2 - 60 : ARENA.width / 2 + 60
+    const spawnY = ARENA.height / 2
+
+    // Build the authoritative sim Player.
+    const sim = createPlayer({ x: spawnX, y: spawnY })
+    this.simPlayers.set(client.sessionId, sim)
+    this.inputs.set(client.sessionId, { moveX: 0, moveY: 0 })
+
+    // Mirror to the schema so the client renders this player.
     const player = new PlayerState()
     player.sessionId = client.sessionId
     player.displayName = auth.displayName
     player.slot = slot
-    player.x = slot === 0 ? -40 : 40
-    player.y = 0
+    player.x = sim.x
+    player.y = sim.y
+    player.hp = sim.hp
+    player.maxHp = sim.maxHp
     this.state.players.set(client.sessionId, player)
 
     if (this.state.players.size >= this.maxClients) {
@@ -128,7 +161,7 @@ export class StickFightRoom extends Room<WorldState> {
     if (!player) return
 
     if (consented) {
-      this.state.players.delete(client.sessionId)
+      this.cleanupClient(client.sessionId)
       return
     }
     // Hold the slot for up to 2 minutes so a backgrounded mobile Safari /
@@ -137,7 +170,7 @@ export class StickFightRoom extends Room<WorldState> {
       await this.allowReconnection(client, 120)
       console.info(`[stick_fight] ${client.sessionId} reconnected`)
     } catch {
-      this.state.players.delete(client.sessionId)
+      this.cleanupClient(client.sessionId)
       this.isLocked = false
       this.unlock().catch(() => {})
     }
@@ -147,9 +180,34 @@ export class StickFightRoom extends Room<WorldState> {
     console.info(`[stick_fight] room ${this.roomId} disposed`)
   }
 
-  /** Server tick — placeholder for phase 3a. Real sim integration in 3b. */
-  private tick(_dt: number): void {
-    // intentionally empty
+  private cleanupClient(sessionId: string): void {
+    this.state.players.delete(sessionId)
+    this.simPlayers.delete(sessionId)
+    this.inputs.delete(sessionId)
+  }
+
+  /**
+   * Server tick — runs at SIM_TICK_HZ. For phase 3b we only update player
+   * movement; combat/enemies/waves land in 3c. Each tick:
+   *  1. Apply each client's last input vector via MovementSystem
+   *  2. Mirror the resulting (x, y, vx, vy) into the schema (Colyseus diffs
+   *     it to all clients automatically)
+   */
+  private tick(dt: number): void {
+    if (this.state.phase !== 'playing') return
+
+    for (const [sessionId, sim] of this.simPlayers) {
+      const input = this.inputs.get(sessionId) ?? { moveX: 0, moveY: 0 }
+      updateMovement(sim, { x: input.moveX, y: input.moveY }, dt)
+
+      const schema = this.state.players.get(sessionId)
+      if (!schema) continue
+      schema.x = sim.x
+      schema.y = sim.y
+      schema.vx = sim.vx
+      schema.vy = sim.vy
+      schema.hp = sim.hp
+    }
   }
 }
 
@@ -157,6 +215,21 @@ type JoinAuth = false | { sub: string | null; displayName: string }
 
 function deriveDisplayName(options: JoinOptions): string {
   return (options.playerName?.trim() || 'Player').slice(0, 20)
+}
+
+function parseMoveInput(raw: unknown): PlayerInputState | null {
+  if (!raw || typeof raw !== 'object') return null
+  const obj = raw as { x?: unknown; y?: unknown }
+  const x = typeof obj.x === 'number' ? obj.x : NaN
+  const y = typeof obj.y === 'number' ? obj.y : NaN
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null
+  // Clamp components to [-1, 1] then renormalize if magnitude > 1 so a
+  // client can't send (10, 10) and gain extra speed.
+  const cx = Math.max(-1, Math.min(1, x))
+  const cy = Math.max(-1, Math.min(1, y))
+  const mag = Math.hypot(cx, cy)
+  if (mag <= 1) return { moveX: cx, moveY: cy }
+  return { moveX: cx / mag, moveY: cy / mag }
 }
 
 function generateLobbyCode(): string {
