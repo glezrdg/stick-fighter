@@ -25,6 +25,13 @@ export class MainMenuScene extends BaseScene {
       }),
     )
 
+    // Co-op multi: LobbyOverlay confirms server phase=playing and emits this.
+    this.busUnsubs.push(
+      this.bus.on('ui:menu:start-netarena', () => {
+        this.scene.start('NetArena')
+      }),
+    )
+
     this.events.once('shutdown', () => this.cleanup())
     this.events.once('destroy', () => this.cleanup())
   }

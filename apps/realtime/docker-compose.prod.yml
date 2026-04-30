@@ -1,0 +1,40 @@
+# Production compose para stick-fighter-realtime en el VPS personal.
+# Pivot post-Colyseus: raw WS + JSON (apps/realtime/src/server.ts).
+# Subdomain: stick-fighter-realtime.neomac.io (cert wildcard *.neomac.io via cf-dns).
+# Comparte el JWT_SECRET con apps/api para validar tokens en el handshake.
+
+services:
+  realtime:
+    container_name: ${PROJECT_NAME:-stick-fighter-realtime}
+    image: ${PROJECT_NAME:-stick-fighter-realtime}:latest
+    build:
+      context: ../..
+      dockerfile: apps/realtime/Dockerfile
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 2567
+      HOST: 0.0.0.0
+      API_VERSION: ${API_VERSION:-0.1.0}
+      JWT_SECRET: ${JWT_SECRET}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS}
+    networks:
+      - web
+    mem_limit: 512m
+    labels:
+      - 'traefik.enable=true'
+      - 'traefik.docker.network=web'
+      - 'traefik.http.routers.${PROJECT_NAME:-stick-fighter-realtime}.rule=Host(`${SUBDOMAIN:-stick-fighter-realtime}.neomac.io`)'
+      - 'traefik.http.routers.${PROJECT_NAME:-stick-fighter-realtime}.entrypoints=websecure'
+      - 'traefik.http.routers.${PROJECT_NAME:-stick-fighter-realtime}.tls=true'
+      - 'traefik.http.routers.${PROJECT_NAME:-stick-fighter-realtime}.tls.certresolver=cf-dns'
+      - 'traefik.http.services.${PROJECT_NAME:-stick-fighter-realtime}.loadbalancer.server.port=2567'
+      - 'traefik.http.routers.${PROJECT_NAME:-stick-fighter-realtime}-http.rule=Host(`${SUBDOMAIN:-stick-fighter-realtime}.neomac.io`)'
+      - 'traefik.http.routers.${PROJECT_NAME:-stick-fighter-realtime}-http.entrypoints=web'
+      - 'traefik.http.routers.${PROJECT_NAME:-stick-fighter-realtime}-http.middlewares=${PROJECT_NAME:-stick-fighter-realtime}-https'
+      - 'traefik.http.middlewares.${PROJECT_NAME:-stick-fighter-realtime}-https.redirectscheme.scheme=https'
+      - 'traefik.http.middlewares.${PROJECT_NAME:-stick-fighter-realtime}-https.redirectscheme.permanent=true'
+
+networks:
+  web:
+    external: true

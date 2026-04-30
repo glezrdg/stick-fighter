@@ -1,0 +1,11 @@
+node_modules
+dist
+.cache
+.turbo
+.git
+.gitignore
+README.md
+*.log
+npm-debug.log
+.vscode
+.idea
