@@ -18,10 +18,12 @@
     "@stick/shared": "workspace:*",
     "@stick/sim": "workspace:*",
     "colyseus": "^0.16.0",
+    "cors": "^2.8.5",
     "express": "^4.21.1",
     "jsonwebtoken": "^9.0.2"
   },
   "devDependencies": {
+    "@types/cors": "^2.8.17",
     "@types/express": "^4.17.21",
     "@types/jsonwebtoken": "^9.0.7",
     "@types/node": "^22.10.0",

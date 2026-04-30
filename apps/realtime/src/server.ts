@@ -2,6 +2,7 @@ import { createServer } from 'node:http'
 
 import { Server } from '@colyseus/core'
 import { WebSocketTransport } from '@colyseus/ws-transport'
+import cors from 'cors'
 import express from 'express'
 
 import { StickFightRoom } from './rooms/StickFightRoom'
@@ -21,8 +22,36 @@ import { StickFightRoom } from './rooms/StickFightRoom'
 const PORT = Number(process.env.PORT ?? 2567)
 const HOST = process.env.HOST ?? '0.0.0.0'
 
+const ALLOWED_ORIGINS = (
+  process.env.CORS_ALLOWED_ORIGINS ?? 'http://localhost:5173,https://stick-fighter.vercel.app'
+)
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean)
+
 async function main() {
   const app = express()
+
+  // Colyseus matchmaking goes over plain HTTP (POST /matchmake/...) before the
+  // WS handshake, so the browser enforces CORS on those calls. Without this,
+  // `client.create('stick_fight')` from Vercel fails with "blocked by CORS".
+  app.use(
+    cors({
+      origin: (origin, cb) => {
+        if (!origin) return cb(null, true)
+        if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true)
+        // Allow any *.vercel.app preview to ease testing of branch deploys.
+        try {
+          const host = new URL(origin).host
+          if (host.endsWith('.vercel.app')) return cb(null, true)
+        } catch {
+          // fall through
+        }
+        cb(new Error(`CORS rejected: ${origin}`), false)
+      },
+      credentials: true,
+    }),
+  )
 
   app.get('/health', (_req, res) => {
     res.json({

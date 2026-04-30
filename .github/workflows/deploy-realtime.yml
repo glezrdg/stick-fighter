@@ -42,6 +42,7 @@ jobs:
       - name: Write apps/realtime/.env from secrets
         env:
           JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          CORS_ALLOWED_ORIGINS: ${{ secrets.CORS_ALLOWED_ORIGINS }}
         run: |
           set -euo pipefail
           cd "/opt/apps/${PROJECT_NAME}/apps/realtime"
@@ -54,6 +55,7 @@ jobs:
           SUBDOMAIN=${SUBDOMAIN}
           API_VERSION=${API_VERSION}
           JWT_SECRET=${JWT_SECRET}
+          CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-http://localhost:5173}
           EOF
           chmod 600 .env
 
