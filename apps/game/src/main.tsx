@@ -77,8 +77,12 @@ async function main(): Promise<void> {
       height: 960,
     },
     render: {
-      antialias: false,
-      pixelArt: true,
+      // Vector look: smooth strokes / circles / edges, no nearest-neighbor.
+      // Matches the legacy Canvas 2D feel (line-art stickmen, not pixel-art).
+      antialias: true,
+      antialiasGL: true,
+      pixelArt: false,
+      roundPixels: false,
     },
     scene: [
       new BootScene(servicesRef),
