@@ -36,6 +36,17 @@ export interface Player {
   /** Seconds since last attack. Resets the combo step if it exceeds COMBO_RESET_SEC. */
   attackStepTimer: number
 
+  // --- bow ---
+  /** Seconds remaining on the bow cooldown. While > 0, `tryShoot` no-ops. */
+  bowCooldown: number
+  /** Seconds remaining on the bow draw/release animation. 0 = bow idle. */
+  bowTimer: number
+  /** Total length of the bow animation (for renderer progress = 1 - bowTimer/bowDuration). */
+  bowDuration: number
+  /** Aim direction frozen at shoot time. Reused by render & projectile. */
+  bowDirX: number
+  bowDirY: number
+
   // --- locomotion / animation ---
   /** Phase accumulator that drives leg/arm oscillation in the renderer. */
   walkPhase: number
@@ -83,5 +94,10 @@ export function createPlayer(opts: { x: number; y: number; maxHp?: number }): Pl
     walkPhase: 0,
     dashTimer: 0,
     regenAcc: 0,
+    bowCooldown: 0,
+    bowTimer: 0,
+    bowDuration: 0,
+    bowDirX: 1,
+    bowDirY: 0,
   }
 }

@@ -185,4 +185,72 @@ describe('CombatSystem', () => {
     c.tryAttack(player)
     expect(far.hp).toBe(5)
   })
+
+  // ---- Bow ----------------------------------------------------------
+
+  describe('tryShoot (bow)', () => {
+    it('fires when off cooldown and triggers onShoot with the auto-aimed direction', () => {
+      const onShoot = vi.fn()
+      const enemy = target({ id: 'ee', x: 300, y: 0, hp: 5 })
+      const c = new CombatSystem({
+        bus,
+        attackPatterns,
+        onShoot,
+        getEnemies: () => [enemy],
+      })
+      const fired = c.tryShoot(player)
+      expect(fired).toBe(true)
+      expect(onShoot).toHaveBeenCalledTimes(1)
+      const call = onShoot.mock.calls[0]?.[0] as { dirX: number; dirY: number }
+      expect(call.dirX).toBeCloseTo(1, 5)
+      expect(call.dirY).toBeCloseTo(0, 5)
+      expect(player.bowCooldown).toBeGreaterThan(0)
+      expect(player.bowTimer).toBeGreaterThan(0)
+    })
+
+    it('returns false and does not call onShoot while bow is on cooldown', () => {
+      const onShoot = vi.fn()
+      const c = new CombatSystem({ bus, attackPatterns, onShoot })
+      c.tryShoot(player)
+      onShoot.mockClear()
+      const fired = c.tryShoot(player)
+      expect(fired).toBe(false)
+      expect(onShoot).not.toHaveBeenCalled()
+    })
+
+    it('cannot shoot while in the middle of a melee swing', () => {
+      const onShoot = vi.fn()
+      const c = new CombatSystem({ bus, attackPatterns, onShoot })
+      c.tryAttack(player)
+      onShoot.mockClear()
+      const fired = c.tryShoot(player)
+      expect(fired).toBe(false)
+      expect(onShoot).not.toHaveBeenCalled()
+    })
+
+    it('uses BOW_AUTO_AIM_RADIUS to find targets beyond melee aim range', () => {
+      const onShoot = vi.fn()
+      // Enemy at 500px — outside AUTO_AIM_RADIUS (220) but inside BOW_AUTO_AIM_RADIUS (600).
+      const far = target({ id: 'ef', x: 500, y: 0, hp: 5 })
+      const c = new CombatSystem({
+        bus,
+        attackPatterns,
+        onShoot,
+        getEnemies: () => [far],
+      })
+      c.tryShoot(player)
+      const call = onShoot.mock.calls[0]?.[0] as { dirX: number }
+      expect(call.dirX).toBeCloseTo(1, 5) // aimed at the far enemy
+    })
+
+    it('decays bowCooldown and bowTimer in update', () => {
+      const c = new CombatSystem({ bus, attackPatterns })
+      c.tryShoot(player)
+      const cd0 = player.bowCooldown
+      const t0 = player.bowTimer
+      c.update(player, 0.1)
+      expect(player.bowCooldown).toBeLessThan(cd0)
+      expect(player.bowTimer).toBeLessThan(t0)
+    })
+  })
 })

@@ -117,6 +117,74 @@ describe('ProjectileSystem', () => {
     expect(sys.getAll().length).toBe(0)
   })
 
+  it('player-owned arrows hit enemies (not the player) and emit combat:hit', () => {
+    const enemy = { id: 'e1', x: 100, y: 0, hp: 10, hurtFlash: 0 }
+    const sys2 = new ProjectileSystem({ bus, getEnemies: () => [enemy] })
+    const hitHandler = vi.fn()
+    bus.on('combat:hit', hitHandler)
+    sys2.spawn({
+      type: 'arrow',
+      x: enemy.x - 1,
+      y: enemy.y,
+      dirX: 1,
+      dirY: 0,
+      speed: 0,
+      dmg: 7,
+      life: 5,
+      ownerId: 'player',
+      radius: 8,
+    })
+    sys2.update(player, 0.016)
+    expect(enemy.hp).toBe(3)
+    expect(hitHandler).toHaveBeenCalledWith(
+      expect.objectContaining({ attackerId: 'player', targetId: 'e1', dmg: 7 }),
+    )
+    expect(sys2.getAll().length).toBe(0)
+  })
+
+  it('player arrows do NOT damage the player (no friendly fire)', () => {
+    const sys2 = new ProjectileSystem({ bus, getEnemies: () => [] })
+    sys2.spawn({
+      type: 'arrow',
+      x: player.x,
+      y: player.y,
+      dirX: 0,
+      dirY: 0,
+      speed: 0,
+      dmg: 50,
+      life: 5,
+      ownerId: 'player',
+      radius: 8,
+    })
+    const beforeHp = player.hp
+    sys2.update(player, 0.016)
+    expect(player.hp).toBe(beforeHp)
+  })
+
+  it('emits enemy:death when an arrow kills', () => {
+    const enemy = { id: 'eK', x: 0, y: 0, hp: 5, hurtFlash: 0 }
+    const sys2 = new ProjectileSystem({ bus, getEnemies: () => [enemy] })
+    const deathHandler = vi.fn()
+    bus.on('enemy:death', deathHandler)
+    sys2.spawn({
+      type: 'arrow',
+      x: 0,
+      y: 0,
+      dirX: 1,
+      dirY: 0,
+      speed: 0,
+      dmg: 10,
+      life: 5,
+      ownerId: 'player',
+      radius: 8,
+    })
+    sys2.update(player, 0.016)
+    expect(enemy.hp).toBeLessThanOrEqual(0)
+    expect(deathHandler).toHaveBeenCalledWith(
+      expect.objectContaining({ enemyId: 'eK', byPlayer: true }),
+    )
+  })
+
   it('emits player:death when the killing projectile lands', () => {
     const deathHandler = vi.fn()
     bus.on('player:death', deathHandler)

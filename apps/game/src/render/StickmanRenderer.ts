@@ -115,6 +115,14 @@ export interface StickmanRenderState {
   clothingColor?: number
   /** Head accessory / held overlay (horns, headband, helm, spear, etc). */
   accessory?: AccessoryKind
+  /** Bow draw/release timer. While > 0 we render the bow attack pose
+   *  (overrides the idle/walking arms). 0 = bow idle. */
+  bowTimer?: number
+  /** Total length of the bow animation, used to compute progress. */
+  bowDuration?: number
+  /** Direction the bow was aimed at when fired. */
+  bowDirX?: number
+  bowDirY?: number
 }
 
 const DEFAULT_COLOR = 0x000000
@@ -470,6 +478,99 @@ export class StickmanRenderer {
   }
 
   /**
+   * Bow draw + release. Three phases via progress (0..1):
+   *   - 0..0.45: drawing — bow rises, string pulls back, arrow nocks
+   *   - 0.45..0.65: release — string snaps forward, arrow leaves
+   *   - 0.65..1: recovery — bow lowers
+   *
+   * `aimAng` is the swing-frame angle (0 = up, +pi/2 = right) for parity with
+   * the rest of the renderer's `(sin, -cos)` convention.
+   */
+  private drawBowAttack(
+    g: Phaser.GameObjects.Graphics,
+    scale: number,
+    shoulderY: number,
+    aimAng: number,
+    progress: number,
+    color: number,
+    lineWidth: number,
+  ): void {
+    const G = STICKMAN_GEOMETRY
+    // Hand position: in front of the body, distance grows then settles.
+    const reachLerp =
+      progress < 0.45 ? progress / 0.45 : progress < 0.65 ? 1 : 1 - (progress - 0.65) / 0.7
+    const bowDist = (16 + 8 * reachLerp) * scale
+    const bowX = Math.sin(aimAng) * bowDist
+    const bowY = shoulderY - Math.cos(aimAng) * bowDist
+
+    // Draw the bow arms (forward shoulder).
+    const leftShoulderX = -G.SHOULDER_OFFSET_X * scale
+    const rightShoulderX = G.SHOULDER_OFFSET_X * scale
+    g.lineStyle(lineWidth, color, 1)
+    g.beginPath()
+    g.moveTo(leftShoulderX, shoulderY)
+    g.lineTo(bowX, bowY)
+    g.strokePath()
+
+    // Bow body — curved limbs + grip.
+    const perpAng = aimAng + Math.PI / 2
+    const limbReach = 14 * scale
+    const limbTipAX = bowX + Math.sin(perpAng) * limbReach
+    const limbTipAY = bowY - Math.cos(perpAng) * limbReach
+    const limbTipBX = bowX - Math.sin(perpAng) * limbReach
+    const limbTipBY = bowY + Math.cos(perpAng) * limbReach
+    g.lineStyle(2.4 * scale, 0xa06820, 1)
+    g.beginPath()
+    g.moveTo(limbTipAX, limbTipAY)
+    // Curve approximation: midpoint pushed forward along the aim.
+    const midAhead = 4 * scale
+    g.lineTo(bowX + Math.sin(aimAng) * midAhead, bowY - Math.cos(aimAng) * midAhead)
+    g.lineTo(limbTipBX, limbTipBY)
+    g.strokePath()
+
+    // Bowstring: in 0..0.45 it bends back as we draw, then snaps forward at release.
+    const drawDepth =
+      progress < 0.45
+        ? -8 * scale * (progress / 0.45)
+        : progress < 0.55
+          ? -8 * scale * (1 - (progress - 0.45) / 0.1)
+          : 0
+    const stringMidX = bowX - Math.sin(aimAng) * drawDepth
+    const stringMidY = bowY + Math.cos(aimAng) * drawDepth
+    g.lineStyle(1 * scale, 0xeeeeee, 0.9)
+    g.beginPath()
+    g.moveTo(limbTipAX, limbTipAY)
+    g.lineTo(stringMidX, stringMidY)
+    g.lineTo(limbTipBX, limbTipBY)
+    g.strokePath()
+
+    // Drawing-back arm (left) + nocked arrow.
+    if (progress < 0.5) {
+      const drawHandX = stringMidX
+      const drawHandY = stringMidY
+      g.lineStyle(lineWidth, color, 1)
+      g.beginPath()
+      g.moveTo(rightShoulderX, shoulderY)
+      g.lineTo(drawHandX, drawHandY)
+      g.strokePath()
+      // Nocked arrow shaft from string mid forward to bow grip.
+      g.lineStyle(1.5 * scale, 0xa06820, 1)
+      g.beginPath()
+      g.moveTo(stringMidX, stringMidY)
+      g.lineTo(bowX, bowY)
+      g.strokePath()
+      // Arrow tip.
+      g.fillStyle(0xcfd8dc, 1)
+      const tipX = bowX + Math.sin(aimAng) * 4 * scale
+      const tipY = bowY - Math.cos(aimAng) * 4 * scale
+      g.fillCircle(tipX, tipY, 1.4 * scale)
+    } else {
+      // After release: hand drops to the side.
+      this.drawIdleArm(g, rightShoulderX, shoulderY, scale, 1, color, lineWidth)
+    }
+  }
+
+  /**
    * Faint motion-line arc that traces the path the hand swept during a swing.
    * Two thin layers (outer = transparent, inner = brighter) read as a smear
    * frame without re-animating the skeleton. Pure cosmetic.
@@ -537,6 +638,15 @@ export class StickmanRenderer {
     const shoulderYOff = shoulderY + G.SHOULDER_OFFSET_Y * scale
 
     const isAttacking = p.attackTimer > 0 && p.attackKind !== null
+    const isShooting =
+      !isAttacking && p.bowTimer !== undefined && p.bowTimer > 0 && (p.bowDuration ?? 0) > 0
+
+    if (isShooting) {
+      const progress = 1 - (p.bowTimer ?? 0) / (p.bowDuration ?? 1)
+      const aimAng = Math.atan2(p.bowDirX ?? p.facingX, -(p.bowDirY ?? p.facingY))
+      this.drawBowAttack(g, scale, shoulderYOff, aimAng, progress, color, lineWidth)
+      return
+    }
 
     if (isAttacking) {
       const progress = p.attackDuration > 0 ? 1 - p.attackTimer / p.attackDuration : 0

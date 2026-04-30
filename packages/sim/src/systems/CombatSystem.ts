@@ -6,8 +6,22 @@ import { createRng } from '../rng'
 
 /** Auto-aim radius for melee attacks (matches legacy line 1681). */
 export const AUTO_AIM_RADIUS = 220
+/** Auto-aim radius for the bow — much longer than melee. */
+export const BOW_AUTO_AIM_RADIUS = 600
 /** If the player doesn't attack again within this window, the combo step resets. */
 export const COMBO_RESET_SEC = 1.5
+/** Bow cooldown between shots (legacy 24 frames / 60 ≈ 0.4s). */
+export const BOW_COOLDOWN_SEC = 0.4
+/** Total bow animation duration (draw + release). */
+export const BOW_DURATION_SEC = 0.3
+/** Player arrow speed in px/sec (matches the spear projectile feel). */
+export const ARROW_SPEED_PX_SEC = 720
+/** Player arrow damage = base damage × this multiplier. */
+export const ARROW_DMG_MUL = 1.0
+/** Arrow projectile life in seconds. */
+const ARROW_LIFE_SEC = 1.6
+/** Arrow projectile collision radius. */
+const ARROW_RADIUS = 8
 /** Forward velocity boost applied at the start of each attack (px/frame at 60Hz).
  *  Per-kind, mirrors legacy line 1735 (kick=4.5, chop=3, spin=2, default=2.5). */
 const LUNGE_BY_KIND: Record<string, number> = {
@@ -65,6 +79,18 @@ export interface CombatSystemOptions {
   /** Invoked when a swing is fired so callers can resolve hits against
    *  non-enemy targets (e.g. destructible obstacles). */
   onSwing?: (ctx: SwingResolveContext) => void
+  /** Spawns a player arrow projectile when the bow fires. The scene wires
+   *  this to its ProjectileSystem so the arrow can collide with enemies. */
+  onShoot?: (opts: {
+    x: number
+    y: number
+    dirX: number
+    dirY: number
+    speed: number
+    dmg: number
+    life: number
+    radius: number
+  }) => void
 }
 
 /**
@@ -82,6 +108,7 @@ export class CombatSystem {
   private readonly getCritChance: () => number
   private readonly rngNext: () => number
   private readonly onSwing: ((ctx: SwingResolveContext) => void) | undefined
+  private readonly onShoot: CombatSystemOptions['onShoot']
 
   constructor(opts: CombatSystemOptions) {
     this.bus = opts.bus
@@ -100,6 +127,7 @@ export class CombatSystem {
       this.rngNext = () => fallback.next()
     }
     this.onSwing = opts.onSwing
+    this.onShoot = opts.onShoot
   }
 
   /** Tick timers: counts the active attack down, resets the combo step on idle. */
@@ -117,6 +145,13 @@ export class CombatSystem {
         player.attackStep = 0
         this.bus.emit('combo:reset', {})
       }
+    }
+
+    if (player.bowCooldown > 0) {
+      player.bowCooldown = Math.max(0, player.bowCooldown - dt)
+    }
+    if (player.bowTimer > 0) {
+      player.bowTimer = Math.max(0, player.bowTimer - dt)
     }
   }
 
@@ -203,12 +238,45 @@ export class CombatSystem {
     }
   }
 
-  private computeAimDirection(player: Player): { x: number; y: number } {
+  /**
+   * Fire an arrow if the bow is off cooldown. Auto-aim picks the closest
+   * enemy within `BOW_AUTO_AIM_RADIUS`; if no target, fires forward.
+   * The actual projectile spawn is delegated to the scene via `onShoot`
+   * so this module stays Phaser-free.
+   */
+  tryShoot(player: Player): boolean {
+    if (player.bowCooldown > 0) return false
+    if (player.attackTimer > 0) return false // can't shoot while mid-melee
+
+    const aim = this.computeAimDirection(player, BOW_AUTO_AIM_RADIUS)
+    player.facingX = aim.x
+    player.facingY = aim.y
+    player.bowDirX = aim.x
+    player.bowDirY = aim.y
+    player.bowCooldown = BOW_COOLDOWN_SEC
+    player.bowTimer = BOW_DURATION_SEC
+    player.bowDuration = BOW_DURATION_SEC
+
+    const dmg = this.getDmgMul() * ARROW_DMG_MUL
+    this.onShoot?.({
+      x: player.x,
+      y: player.y - 30, // shoulder height (matches enemy projectile spawn)
+      dirX: aim.x,
+      dirY: aim.y,
+      speed: ARROW_SPEED_PX_SEC,
+      dmg,
+      life: ARROW_LIFE_SEC,
+      radius: ARROW_RADIUS,
+    })
+    return true
+  }
+
+  private computeAimDirection(player: Player, radius = AUTO_AIM_RADIUS): { x: number; y: number } {
     const enemies = this.getEnemies?.()
     if (!enemies) return { x: player.facingX, y: player.facingY }
 
     let best: EnemyTarget | undefined
-    let bestDistSq = AUTO_AIM_RADIUS * AUTO_AIM_RADIUS
+    let bestDistSq = radius * radius
     for (const e of enemies) {
       if (e.hp <= 0) continue
       const dx = e.x - player.x

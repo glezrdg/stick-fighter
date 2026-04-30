@@ -140,7 +140,11 @@ export class ArenaScene extends BaseScene {
 
     // ---- Systems ----
     this.waves = new WaveSystem({ bus: this.bus, rng: this.rng })
-    this.projectiles = new ProjectileSystem({ bus: this.bus })
+    this.projectiles = new ProjectileSystem({
+      bus: this.bus,
+      // Player arrows collide against the live enemy list.
+      getEnemies: () => this.waves.getEnemies(),
+    })
     this.obstacleSys = new ObstacleSystem({ bus: this.bus, rng: this.rng })
     this.obstacleSys.generate()
     this.combat = new CombatSystem({
@@ -155,6 +159,19 @@ export class ArenaScene extends BaseScene {
           ...ctx,
           enemies: this.waves.getEnemies(),
           player: this.player,
+        }),
+      onShoot: (opts) =>
+        this.projectiles.spawn({
+          type: 'arrow',
+          x: opts.x,
+          y: opts.y,
+          dirX: opts.dirX,
+          dirY: opts.dirY,
+          speed: opts.speed,
+          dmg: opts.dmg,
+          life: opts.life,
+          radius: opts.radius,
+          ownerId: 'player',
         }),
     })
     this.enemySys = new EnemySystem({
@@ -203,6 +220,9 @@ export class ArenaScene extends BaseScene {
     this.busUnsubs.push(
       this.bus.on('input:attack', () => {
         if (!this.runState.paused) this.combat.tryAttack(this.player)
+      }),
+      this.bus.on('input:shoot', () => {
+        if (!this.runState.paused) this.combat.tryShoot(this.player)
       }),
       this.bus.on('input:skill', ({ slot }) => {
         if (!this.runState.paused) this.castSkill(slot)
@@ -758,6 +778,45 @@ export class ArenaScene extends BaseScene {
         g.strokePath()
         g.fillStyle(0xcfd8dc, 1)
         g.fillCircle(tx, ty, 3)
+      } else if (p.type === 'arrow') {
+        // Player arrow: thin shaft + steel tip + red fletching at tail.
+        const angle = Math.atan2(p.vy, p.vx)
+        const len = 18
+        const tx = p.x + Math.cos(angle) * len
+        const ty = p.y + Math.sin(angle) * len
+        const bx = p.x - Math.cos(angle) * len * 0.5
+        const by = p.y - Math.sin(angle) * len * 0.5
+        // Wood shaft.
+        g.lineStyle(2, 0xa06820, 1)
+        g.beginPath()
+        g.moveTo(bx, by)
+        g.lineTo(tx, ty)
+        g.strokePath()
+        // Steel tip (triangle).
+        const tipBackX = tx - Math.cos(angle) * 4
+        const tipBackY = ty - Math.sin(angle) * 4
+        const perp = angle + Math.PI / 2
+        const tw = 2.2
+        g.fillStyle(0xcfd8dc, 1)
+        g.fillTriangle(
+          tx,
+          ty,
+          tipBackX + Math.cos(perp) * tw,
+          tipBackY + Math.sin(perp) * tw,
+          tipBackX - Math.cos(perp) * tw,
+          tipBackY - Math.sin(perp) * tw,
+        )
+        // Red fletching at the tail.
+        g.fillStyle(0xc41a1a, 1)
+        const fperp = angle + Math.PI / 2
+        const fX1 = bx + Math.cos(fperp) * 3
+        const fY1 = by + Math.sin(fperp) * 3
+        const fX2 = bx - Math.cos(fperp) * 3
+        const fY2 = by - Math.sin(fperp) * 3
+        const fbx = bx - Math.cos(angle) * 4
+        const fby = by - Math.sin(angle) * 4
+        g.fillTriangle(bx, by, fX1, fY1, fbx, fby)
+        g.fillTriangle(bx, by, fX2, fY2, fbx, fby)
       } else {
         // Default: glowing orb.
         g.fillStyle(0x5a30b0, 0.4)
