@@ -1,3 +1,4 @@
+import type { SaveCurrent } from '@stick/shared'
 import { type Rng, createRng, timeSeed } from '@stick/sim'
 
 import type { InputController } from '../core/input/InputController'
@@ -24,6 +25,9 @@ export interface Services {
   readonly bus: EventBus
   readonly rng: Rng
   readonly saveStore: SaveStore
+  /** Mutable reference to the loaded save. Sceens that change it (shop,
+   *  end-of-run gold) MUST call `saveStore.save(save)` to persist. */
+  save: SaveCurrent
   input: InputController
 }
 
@@ -35,13 +39,21 @@ export interface BootstrapOptions {
 /**
  * Phase 1: everything that doesn't need the Phaser canvas. Returns the
  * services object minus `input` — tests and offline tools can use it as-is.
+ *
+ * Async because we need to await the save to load (validated + migrated)
+ * before any scene tries to read it.
  */
-export function bootstrapPreGame(opts: BootstrapOptions = {}): Omit<Services, 'input'> {
+export async function bootstrapPreGame(
+  opts: BootstrapOptions = {},
+): Promise<Omit<Services, 'input'>> {
   const seed = opts.seed ?? timeSeed()
+  const saveStore = new SaveStore()
+  const save = await saveStore.load()
   return {
     bus: createEventBus(),
     rng: createRng(seed),
-    saveStore: new SaveStore(),
+    saveStore,
+    save,
   }
 }
 

@@ -35,15 +35,15 @@ import { WaveSystem } from '../systems/WaveSystem'
 import { BaseScene } from './BaseScene'
 
 /**
- * F2.1 loadout — what the run starts with. F2.4 reads this from SaveStore
- * (with the shop wired in). Hard-coding here for now keeps the deployed
- * preview useful so we can verify the SkillSystem end-to-end.
+ * The active loadout for this run, derived from `services.save`. Computed
+ * fresh in `create()` so it picks up shop purchases between runs.
  */
-const F2_1_TEST_LOADOUT = {
-  ownedSkills: ['dash', 'kiBlast', 'shield', 'vampire', 'golden', 'cdReduce', 'heal'],
-  equipped: ['kiBlast', 'dash'] as [string, string],
-  weaponId: 'katana',
-  weaponLevel: 1,
+interface RunLoadout {
+  ownedSkills: readonly string[]
+  /** Up to 2 equipped active skill ids (passives are derived from owned). */
+  equipped: [string | null, string | null]
+  weaponId: string
+  weaponLevel: number
 }
 
 export class ArenaScene extends BaseScene {
@@ -71,18 +71,22 @@ export class ArenaScene extends BaseScene {
   private tornadoTickAcc = 0
   private busUnsubs: Array<() => void> = []
   private activePopups = 0
+  private loadout!: RunLoadout
 
   constructor(services: ConstructorParameters<typeof BaseScene>[1]) {
     super(ArenaScene.KEY, services)
   }
 
   create(): void {
+    // ---- Loadout from save ----
+    this.loadout = this.computeLoadout()
+
     // ---- Effective stats (BuffSystem) ----
     this.stats = BuffSystem.computeStats({
-      ownedSkills: F2_1_TEST_LOADOUT.ownedSkills,
+      ownedSkills: this.loadout.ownedSkills,
       runBuffs: { dmg: 0, atkSpeed: 0, hpMax: 0, crit: 0, knockback: 0, regen: 0, gold: 0 },
-      equippedWeaponId: F2_1_TEST_LOADOUT.weaponId,
-      weaponLevel: F2_1_TEST_LOADOUT.weaponLevel,
+      equippedWeaponId: this.loadout.weaponId,
+      weaponLevel: this.loadout.weaponLevel,
     })
 
     // ---- Run state + player ----
@@ -166,8 +170,8 @@ export class ArenaScene extends BaseScene {
     this.bus.emit('gold:changed', { gold: this.runState.gold, delta: 0 })
     this.bus.emit('player:hp:changed', { hp: this.player.hp, maxHp: this.player.maxHp })
     this.bus.emit('skills:equipped', {
-      slot0: F2_1_TEST_LOADOUT.equipped[0] ?? null,
-      slot1: F2_1_TEST_LOADOUT.equipped[1] ?? null,
+      slot0: this.loadout.equipped[0],
+      slot1: this.loadout.equipped[1],
     })
 
     this.waves.startNextWave()
@@ -241,7 +245,8 @@ export class ArenaScene extends BaseScene {
   }
 
   private castSkill(slot: 0 | 1): void {
-    const skillId = F2_1_TEST_LOADOUT.equipped[slot]
+    const skillId = this.loadout.equipped[slot]
+    if (!skillId) return
     this.skillSystem.cast({
       slot,
       skillId,
@@ -303,11 +308,30 @@ export class ArenaScene extends BaseScene {
 
   private recomputeStats(): void {
     this.stats = BuffSystem.computeStats({
-      ownedSkills: F2_1_TEST_LOADOUT.ownedSkills,
+      ownedSkills: this.loadout.ownedSkills,
       runBuffs: this.runState.runBuffs,
-      equippedWeaponId: F2_1_TEST_LOADOUT.weaponId,
-      weaponLevel: F2_1_TEST_LOADOUT.weaponLevel,
+      equippedWeaponId: this.loadout.weaponId,
+      weaponLevel: this.loadout.weaponLevel,
     })
+  }
+
+  /** Pull the current run loadout from the save. Falls back to defaults if
+   *  the player hasn't equipped anything yet. */
+  private computeLoadout(): RunLoadout {
+    const save = this.services.save
+    const owned = save.skills.owned
+    const equipped: [string | null, string | null] = [
+      save.skills.equipped[0] ?? null,
+      save.skills.equipped[1] ?? null,
+    ]
+    const weaponId = save.cosmetics.sword.equipped
+    const weaponLevel = save.weaponLevels[weaponId] ?? 1
+    return {
+      ownedSkills: owned,
+      equipped,
+      weaponId,
+      weaponLevel,
+    }
   }
 
   private onCombatHit(targetId: string, dmg: number, crit: boolean): void {
@@ -343,7 +367,7 @@ export class ArenaScene extends BaseScene {
 
     // Vampire passive.
     if (
-      F2_1_TEST_LOADOUT.ownedSkills.includes('vampire') &&
+      this.loadout.ownedSkills.includes('vampire') &&
       this.player.hp > 0 &&
       this.player.hp < this.player.maxHp
     ) {
@@ -481,7 +505,16 @@ export class ArenaScene extends BaseScene {
       gold: this.runState.gold,
       reason,
     })
+    this.persistRunResults().catch((err) => console.error('[arena] save persist failed:', err))
     this.scene.start('GameOver', { runState: this.runState })
+  }
+
+  private async persistRunResults(): Promise<void> {
+    const save = this.services.save
+    save.gold += this.runState.gold
+    save.totalKills += this.runState.kills
+    if (this.runState.wave > save.bestWave) save.bestWave = this.runState.wave
+    await this.services.saveStore.save(save)
   }
 
   private cleanup(): void {

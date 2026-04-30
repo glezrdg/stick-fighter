@@ -34,17 +34,25 @@ export class GameOverScene extends BaseScene {
       .setOrigin(0.5)
 
     if (this.summary) {
+      const save = this.services.save
       this.add
         .text(
           cx,
           cy + 4,
-          `Wave ${this.summary.wave}   ·   Kills ${this.summary.kills}   ·   Gold ${this.summary.gold}`,
+          `Wave ${this.summary.wave}   ·   Kills ${this.summary.kills}   ·   +${this.summary.gold} 🪙`,
           {
             fontFamily: 'Inter, system-ui, sans-serif',
             fontSize: '16px',
             color: '#ffd54a',
           },
         )
+        .setOrigin(0.5)
+      this.add
+        .text(cx, cy + 28, `Total: 🪙 ${save.gold}   ·   Best wave: ${save.bestWave}`, {
+          fontFamily: 'Inter, system-ui, sans-serif',
+          fontSize: '12px',
+          color: '#9aa0a6',
+        })
         .setOrigin(0.5)
     }
 
