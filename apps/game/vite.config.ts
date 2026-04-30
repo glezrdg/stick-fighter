@@ -15,7 +15,9 @@ export default defineConfig({
   },
   test: {
     globals: false,
-    environment: 'node',
+    // happy-dom by default; pure-logic tests can opt out via
+    // `// @vitest-environment node` at the top of the file.
+    environment: 'happy-dom',
     include: ['src/**/*.test.{ts,tsx}'],
   },
 })

@@ -48,6 +48,16 @@ export type GameEvents = {
   'ui:shop:open': Record<string, never>
   'ui:shop:close': Record<string, never>
   'ui:shop:purchase': { itemId: string; cost: number }
+
+  // ---- Input (raw) -------------------------------------------------
+  // The InputController emits these. Game systems decide whether they
+  // can act on them (cooldowns, scene state, etc.).
+  'input:attack': Record<string, never>
+  'input:shoot': Record<string, never>
+  'input:skill': { slot: 0 | 1 }
+  'input:joystick:start': { screenX: number; screenY: number }
+  'input:joystick:move': { vx: number; vy: number }
+  'input:joystick:end': Record<string, never>
 }
 
 export type EventBus = {
