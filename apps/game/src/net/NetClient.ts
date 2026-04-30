@@ -132,14 +132,25 @@ export class NetClient {
     }
   }
 
-  /** Friend: join an existing room by 4-letter code. The Colyseus matchmaker
-   *  matches via `filterBy(['lobbyCode'])` on the server. */
+  /** Friend: join an existing room by 4-letter code. We look up the roomId
+   *  via the server's HTTP `/lobby/:code` endpoint (since Colyseus 0.16's
+   *  `filterBy` matchmaker didn't reliably route on the option), then call
+   *  `joinById`. */
   async joinRoom(playerName: string, lobbyCode: string): Promise<RoomSnapshot | null> {
     try {
-      const room = await this.getClient().join(
-        'stick_fight',
-        this.joinOptions(playerName, lobbyCode),
-      )
+      const code = lobbyCode.trim().toUpperCase()
+      if (!REALTIME_URL) return null
+
+      // The realtime server speaks WS via `wss://` — convert to `https://`
+      // for the HTTP lookup. Same host/path otherwise.
+      const httpBase = REALTIME_URL.replace(/^wss:\/\//, 'https://').replace(/^ws:\/\//, 'http://')
+      const lookupRes = await fetch(`${httpBase}/lobby/${code}`)
+      if (!lookupRes.ok) return null
+      const data = (await lookupRes.json()) as { roomId?: string }
+      if (!data.roomId) return null
+
+      this.cachedLobbyCode = code
+      const room = await this.getClient().joinById(data.roomId, this.joinOptions(playerName, code))
       return this.bindRoom(room)
     } catch (err) {
       console.warn('[net] joinRoom failed:', err)

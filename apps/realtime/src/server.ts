@@ -1,6 +1,6 @@
 import { createServer } from 'node:http'
 
-import { Server } from '@colyseus/core'
+import { Server, matchMaker } from '@colyseus/core'
 import { WebSocketTransport } from '@colyseus/ws-transport'
 import cors from 'cors'
 import express from 'express'
@@ -61,6 +61,29 @@ async function main() {
     })
   })
 
+  /**
+   * Lobby code lookup: resolves a 4-letter code to a roomId so the friend
+   * can call `client.joinById(roomId)`. We use this instead of Colyseus's
+   * `filterBy` because that didn't reliably match in 0.16 with options.
+   */
+  app.get('/lobby/:code', async (req, res) => {
+    const code = String(req.params.code ?? '').toUpperCase()
+    if (!/^[A-Z2-9]{4}$/.test(code)) {
+      return res.status(400).json({ error: 'invalid code format' })
+    }
+    try {
+      const rooms = await matchMaker.query({ name: 'stick_fight' })
+      const match = rooms.find(
+        (r) => (r.metadata as { lobbyCode?: string } | null | undefined)?.lobbyCode === code,
+      )
+      if (!match) return res.status(404).json({ error: 'no room with that code' })
+      return res.json({ roomId: match.roomId, locked: match.locked, clients: match.clients })
+    } catch (err) {
+      console.error('[realtime] /lobby lookup failed:', err)
+      return res.status(500).json({ error: 'internal error' })
+    }
+  })
+
   const httpServer = createServer(app)
   const gameServer = new Server({
     transport: new WebSocketTransport({
@@ -74,11 +97,7 @@ async function main() {
     }),
   })
 
-  // `filterBy` tells the Colyseus matchmaker to match rooms by their
-  // `lobbyCode` metadata when a client calls `.join('stick_fight', { lobbyCode })`.
-  // The host's `.create('stick_fight')` ignores this filter (no code passed),
-  // and the room's `onCreate` populates the metadata with a generated code.
-  gameServer.define('stick_fight', StickFightRoom).filterBy(['lobbyCode'])
+  gameServer.define('stick_fight', StickFightRoom)
 
   // Graceful shutdown for Docker SIGTERM.
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {
