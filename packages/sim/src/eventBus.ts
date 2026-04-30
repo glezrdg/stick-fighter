@@ -110,6 +110,9 @@ export type GameEvents = {
   'ui:scene:enter': { name: 'menu' | 'arena' | 'gameover' }
   /** User pressed "PLAY" in the Solid MainMenu — Phaser starts ArenaScene. */
   'ui:menu:start-run': Record<string, never>
+  /** User joined a co-op lobby and the server transitioned to phase=playing.
+   *  LobbyOverlay emits this and MainMenuScene starts NetArenaScene. */
+  'ui:menu:start-netarena': Record<string, never>
   /** User pressed "BACK" in GameOver — Phaser switches to MainMenu. */
   'ui:menu:return': Record<string, never>
 
