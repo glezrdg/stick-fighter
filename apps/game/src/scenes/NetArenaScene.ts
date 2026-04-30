@@ -1,9 +1,11 @@
 import type { AttackKind } from '@stick/content'
-import type { NetEnemy, NetPlayer } from '@stick/shared'
+import type { NetEnemy, NetPlayer, StateMsg } from '@stick/shared'
 import { ARENA, CAM_ZOOM } from '@stick/sim'
 
 import { netClient, type RoomSnapshot } from '../net/NetClient'
+import { ParticleRenderer } from '../render/ParticleRenderer'
 import { StickmanRenderer, type StickmanRenderState } from '../render/StickmanRenderer'
+import { ParticleSystem } from '../systems/ParticleSystem'
 
 import { BaseScene } from './BaseScene'
 
@@ -20,21 +22,29 @@ function coerceKind(s: string): AttackKind | null {
   return VALID_KINDS.has(s as AttackKind) ? (s as AttackKind) : null
 }
 
+/** Per-actor (player or enemy) HUD container: HP bar + name label. */
+interface ActorOverlay {
+  /** Background bar (dark slot). */
+  hpBg: Phaser.GameObjects.Rectangle
+  /** Filled portion (color = green/yellow/red by hp%). */
+  hpFill: Phaser.GameObjects.Rectangle
+  /** Optional name (players only). Null for enemies. */
+  name: Phaser.GameObjects.Text | null
+  /** Last hp seen — diffed each tick to spawn damage popups. */
+  lastHp: number
+}
+
 /**
  * Multiplayer arena scene — render-only.
  *
- * Server is authoritative; this scene reads `RoomSnapshot.state` and draws
- * what the server says. No tickArena() here — the local sim doesn't run.
- *
- * Input flow:
- *   - InputController emits `input:attack/shoot/skill` on the local bus.
- *   - This scene listens to those and forwards them to the server via
- *     `netClient.sendInput(dx, dy, edges)` along with the move vector.
- *
- * Movement is sent on every frame the vector or any edge changes (the
- * NetClient coalesces no-op emissions). RTT is hidden by trusting the
- * server — no client-side prediction in this first cut, since the F2 codebase
- * already feels good at 50-150ms RTT against an LAN/VPS server.
+ * Server is authoritative; this scene reads `RoomSnapshot.state` and draws.
+ * No tickArena() runs locally. Polish layer:
+ *   - Names + "vos" indicator over each player
+ *   - HP bars (player + enemy) with damage flashes
+ *   - Damage popups when HP drops
+ *   - Particles when enemies die or get hit (detected via state diff)
+ *   - HUD wave/gold/alive piped through the bus so HudRoot reacts as in SP
+ *   - Gameover screen when both players reach 0 HP / server says phase=gameover
  */
 export class NetArenaScene extends BaseScene {
   static readonly KEY = 'NetArena'
@@ -42,11 +52,24 @@ export class NetArenaScene extends BaseScene {
   private playerGraphics!: Phaser.GameObjects.Graphics
   private enemyGraphics = new Map<string, Phaser.GameObjects.Graphics>()
   private peerGraphics = new Map<string, Phaser.GameObjects.Graphics>()
+  private particleGraphics!: Phaser.GameObjects.Graphics
+
+  private playerOverlays = new Map<string, ActorOverlay>()
+  private enemyOverlays = new Map<string, ActorOverlay>()
 
   private stickman!: StickmanRenderer
+  private particles!: ParticleSystem
+
   private busUnsubs: Array<() => void> = []
   private netUnsub: (() => void) | null = null
   private snap: RoomSnapshot = netClient.getSnapshot()
+  private prevState: StateMsg | null = null
+
+  // HUD bus events tracking — emit only on change to avoid spamming the bus.
+  private lastWave = -1
+  private lastGold = -1
+  private lastAlive = -1
+  private lastTotal = -1
 
   // Edge buffers for the next sendInput() call.
   private pendingAttack = false
@@ -66,30 +89,30 @@ export class NetArenaScene extends BaseScene {
     this.bus.emit('ui:scene:enter', { name: 'arena' })
 
     this.stickman = new StickmanRenderer()
+    this.particles = new ParticleSystem({ rng: this.rng })
     this.playerGraphics = this.add.graphics()
     this.playerGraphics.setDepth(1000)
+    this.particleGraphics = this.add.graphics()
+    this.particleGraphics.setDepth(950)
 
     // Edge inputs from the local InputController → buffered, sent on next frame.
-    this.busUnsubs.push(
-      this.bus.on('input:attack', () => {
-        this.pendingAttack = true
-      }),
-    )
-    this.busUnsubs.push(
-      this.bus.on('input:shoot', () => {
-        this.pendingShoot = true
-      }),
-    )
-    this.busUnsubs.push(
-      this.bus.on('input:skill', ({ slot }) => {
-        this.pendingSkill = slot
-      }),
-    )
+    this.busUnsubs.push(this.bus.on('input:attack', () => (this.pendingAttack = true)))
+    this.busUnsubs.push(this.bus.on('input:shoot', () => (this.pendingShoot = true)))
+    this.busUnsubs.push(this.bus.on('input:skill', ({ slot }) => (this.pendingSkill = slot)))
 
     this.netUnsub = netClient.subscribe((s) => {
       this.snap = s
-      // If the server says it's over (gameover or error), bail to menu.
+      // Server says it's over (or we got error/disconnected) → bail to menu.
       if (s.phase === 'gameover' || s.phase === 'error' || s.phase === 'idle') {
+        // Surface the run-end so HUD/menu chrome reacts.
+        if (s.phase === 'gameover') {
+          this.bus.emit('run:end', {
+            wave: this.lastWave,
+            kills: 0,
+            gold: this.lastGold,
+            reason: 'death',
+          })
+        }
         this.scene.start('MainMenu')
       }
     })
@@ -98,10 +121,11 @@ export class NetArenaScene extends BaseScene {
     this.events.once('destroy', () => this.cleanup())
   }
 
-  override update(_time: number, _deltaMs: number): void {
+  override update(_time: number, deltaMs: number): void {
+    const dt = Math.max(0, Math.min(0.1, deltaMs / 1000))
     const moveVec = this.services.input.getMoveVector()
 
-    // Forward input to the server. The NetClient coalesces dups so emitting
+    // Forward input to the server. NetClient coalesces dups so emitting
     // every frame is fine.
     const edges =
       this.pendingAttack || this.pendingShoot || this.pendingSkill !== null
@@ -120,45 +144,135 @@ export class NetArenaScene extends BaseScene {
     const state = this.snap.state
     if (!state) return
 
+    this.diffAndEmit(state)
+
     this.renderPlayers(state.players)
     this.renderEnemies(state.enemies)
     this.reapStaleEnemies(state.enemies)
+    this.reapStalePlayers(state.players)
 
-    // Camera follows the local player.
-    const me = state.players.find((p) => p.sessionId === this.snap.sessionId)
+    // Tick + draw client-side particles (the only sim that runs locally).
+    this.particles.update(dt)
+    this.particleGraphics.clear()
+    ParticleRenderer.draw(this.particleGraphics, this.particles.getAll())
+
+    this.prevState = state
+
+    // Camera follows the local player (or first player if we got booted).
+    const me = state.players.find((p) => p.sessionId === this.snap.sessionId) ?? state.players[0]
     if (me) this.cameras.main.centerOn(me.x, me.y)
+  }
+
+  // ----------------------------------------------------------------- diff fx
+
+  /**
+   * Compare new state to previous and emit cosmetic FX + HUD events.
+   * Server doesn't send `combat:hit` or `enemy:death` over the wire (yet) —
+   * we infer them by watching HP go down and entries disappear.
+   */
+  private diffAndEmit(state: StateMsg): void {
+    const prev = this.prevState
+
+    // ---- HUD bus events ------------------------------------------------
+    if (state.wave !== this.lastWave) {
+      this.lastWave = state.wave
+      this.bus.emit('wave:start', { wave: state.wave, totalEnemies: state.total })
+    }
+    if (state.gold !== this.lastGold) {
+      const delta = state.gold - this.lastGold
+      this.lastGold = state.gold
+      this.bus.emit('gold:changed', { gold: state.gold, delta: this.lastGold === -1 ? 0 : delta })
+    }
+    if (state.alive !== this.lastAlive || state.total !== this.lastTotal) {
+      this.lastAlive = state.alive
+      this.lastTotal = state.total
+      this.bus.emit('wave:enemies:changed', { alive: state.alive, total: state.total })
+    }
+
+    // The local player's HP changed → emit so HudRoot HP bar reacts.
+    const me = state.players.find((p) => p.sessionId === this.snap.sessionId)
+    const meBefore = prev?.players.find((p) => p.sessionId === this.snap.sessionId)
+    if (me && (!meBefore || me.hp !== meBefore.hp || me.maxHp !== meBefore.maxHp)) {
+      this.bus.emit('player:hp:changed', { hp: me.hp, maxHp: me.maxHp })
+    }
+
+    if (!prev) return
+
+    // ---- Damage popups + sparks ----------------------------------------
+    // Players: HP went down → blood + popup at their position.
+    for (const p of state.players) {
+      const before = prev.players.find((q) => q.sessionId === p.sessionId)
+      if (!before) continue
+      if (p.hp < before.hp) {
+        const dmg = before.hp - p.hp
+        this.particles.spawnBlood(p.x, p.y - 18, -p.facingX, -p.facingY)
+        this.spawnDamagePopup(p.x, p.y - 38, dmg, false)
+      }
+    }
+    // Enemies: HP down → slash + popup; disappeared → blood burst.
+    for (const e of state.enemies) {
+      const before = prev.enemies.find((q) => q.id === e.id)
+      if (!before) continue
+      if (e.hp < before.hp) {
+        const dmg = before.hp - e.hp
+        this.particles.spawnSlashFx(e.x, e.y - 18, e.facingX, e.facingY)
+        this.spawnDamagePopup(e.x, e.y - 30, dmg, true)
+      }
+    }
+    const liveIds = new Set(state.enemies.map((e) => e.id))
+    for (const before of prev.enemies) {
+      if (!liveIds.has(before.id)) {
+        // Enemy gone → blood burst at the last-seen position.
+        this.particles.spawnBlood(before.x, before.y - 18, 0, -1, 22)
+        this.particles.spawnShockwave(before.x, before.y - 18, 0xa00000, 16)
+      }
+    }
+  }
+
+  /** Floating yellow "-N" that lifts and fades over ~600ms. */
+  private spawnDamagePopup(x: number, y: number, dmg: number, fromEnemy: boolean): void {
+    const text = this.add.text(x, y, `-${Math.ceil(dmg)}`, {
+      fontFamily: "'Russo One', sans-serif",
+      fontSize: fromEnemy ? '12px' : '14px',
+      color: fromEnemy ? '#ffd54a' : '#ff6060',
+      stroke: '#000',
+      strokeThickness: 3,
+    })
+    text.setOrigin(0.5, 1)
+    text.setDepth(1100)
+    this.tweens.add({
+      targets: text,
+      y: y - 22,
+      alpha: 0,
+      duration: 600,
+      ease: 'Quad.easeOut',
+      onComplete: () => text.destroy(),
+    })
   }
 
   // ---------------------------------------------------------------- renderers
 
   private renderPlayers(players: ReadonlyArray<NetPlayer>): void {
-    // Draw "self" with the same renderer as single-player so it feels familiar.
-    // Peers get a separate Graphics object each, with a slight tint.
     for (const p of players) {
-      if (p.sessionId === this.snap.sessionId) {
+      const isSelf = p.sessionId === this.snap.sessionId
+      let g: Phaser.GameObjects.Graphics
+      if (isSelf) {
         this.playerGraphics.clear()
         this.playerGraphics.setPosition(p.x, p.y)
-        this.stickman.draw(this.playerGraphics, this.toRenderable(p, 0x000000))
+        g = this.playerGraphics
       } else {
-        let g = this.peerGraphics.get(p.sessionId)
-        if (!g) {
-          g = this.add.graphics()
-          g.setDepth(1000)
-          this.peerGraphics.set(p.sessionId, g)
+        let peer = this.peerGraphics.get(p.sessionId)
+        if (!peer) {
+          peer = this.add.graphics()
+          peer.setDepth(1000)
+          this.peerGraphics.set(p.sessionId, peer)
         }
-        g.clear()
-        g.setPosition(p.x, p.y)
-        this.stickman.draw(g, this.toRenderable(p, 0x335533))
+        peer.clear()
+        peer.setPosition(p.x, p.y)
+        g = peer
       }
-    }
-
-    // Reap peer graphics whose owner left.
-    const live = new Set(players.map((p) => p.sessionId))
-    for (const [sid, g] of this.peerGraphics) {
-      if (!live.has(sid)) {
-        g.destroy()
-        this.peerGraphics.delete(sid)
-      }
+      this.stickman.draw(g, this.toRenderable(p, isSelf ? 0x000000 : 0x335533))
+      this.updatePlayerOverlay(p, isSelf)
     }
   }
 
@@ -172,9 +286,6 @@ export class NetArenaScene extends BaseScene {
       }
       g.clear()
       g.setPosition(e.x, e.y)
-      // Use stickman renderer with an enemy-ish tint for now. Real enemy
-      // rendering needs the type's accessory/clothing — kept minimal here
-      // to prove the wire works.
       const enemyState: StickmanRenderState = {
         vx: e.vx,
         vy: e.vy,
@@ -191,7 +302,61 @@ export class NetArenaScene extends BaseScene {
         color: enemyColorOf(e.typeId),
       }
       this.stickman.draw(g, enemyState)
+      this.updateEnemyOverlay(e)
     }
+  }
+
+  /** HP bar + name above each player. Self gets "(vos)" and a brighter tint. */
+  private updatePlayerOverlay(p: NetPlayer, isSelf: boolean): void {
+    let ov = this.playerOverlays.get(p.sessionId)
+    if (!ov) {
+      const hpBg = this.add.rectangle(0, 0, 36, 4, 0x2a2a2a).setOrigin(0.5, 0.5).setDepth(1050)
+      const hpFill = this.add.rectangle(0, 0, 34, 2, 0x7fff7f).setOrigin(0, 0.5).setDepth(1051)
+      const labelText = isSelf ? `${p.name} (vos)` : p.name
+      const name = this.add
+        .text(0, 0, labelText, {
+          fontFamily: "'Russo One', sans-serif",
+          fontSize: '10px',
+          color: isSelf ? '#ffd54a' : '#7fc97f',
+          stroke: '#000',
+          strokeThickness: 2,
+        })
+        .setOrigin(0.5, 1)
+        .setDepth(1052)
+      ov = { hpBg, hpFill, name, lastHp: p.hp }
+      this.playerOverlays.set(p.sessionId, ov)
+    }
+    const hpFrac = Math.max(0, Math.min(1, p.maxHp > 0 ? p.hp / p.maxHp : 0))
+    const above = p.y - 36
+    ov.hpBg.setPosition(p.x, above)
+    ov.hpFill.setPosition(p.x - 17, above)
+    ov.hpFill.width = 34 * hpFrac
+    ov.hpFill.fillColor = hpFrac > 0.6 ? 0x7fff7f : hpFrac > 0.3 ? 0xffd54a : 0xff6060
+    if (ov.name) ov.name.setPosition(p.x, above - 4)
+    ov.lastHp = p.hp
+  }
+
+  /** Compact HP bar above each enemy (no name). */
+  private updateEnemyOverlay(e: NetEnemy): void {
+    let ov = this.enemyOverlays.get(e.id)
+    if (!ov) {
+      const hpBg = this.add.rectangle(0, 0, 24, 3, 0x2a2a2a).setOrigin(0.5, 0.5).setDepth(950)
+      const hpFill = this.add.rectangle(0, 0, 22, 2, 0xff6060).setOrigin(0, 0.5).setDepth(951)
+      ov = { hpBg, hpFill, name: null, lastHp: e.hp }
+      this.enemyOverlays.set(e.id, ov)
+    }
+    const hpFrac = Math.max(0, Math.min(1, e.maxHp > 0 ? e.hp / e.maxHp : 0))
+    // Only show enemy HP bars when they've taken damage (less HUD noise).
+    const visible = hpFrac > 0 && hpFrac < 1
+    ov.hpBg.setVisible(visible)
+    ov.hpFill.setVisible(visible)
+    if (visible) {
+      const above = e.y - 30
+      ov.hpBg.setPosition(e.x, above)
+      ov.hpFill.setPosition(e.x - 11, above)
+      ov.hpFill.width = 22 * hpFrac
+    }
+    ov.lastHp = e.hp
   }
 
   private reapStaleEnemies(enemies: ReadonlyArray<NetEnemy>): void {
@@ -200,6 +365,31 @@ export class NetArenaScene extends BaseScene {
       if (!live.has(id)) {
         g.destroy()
         this.enemyGraphics.delete(id)
+      }
+    }
+    for (const [id, ov] of this.enemyOverlays) {
+      if (!live.has(id)) {
+        ov.hpBg.destroy()
+        ov.hpFill.destroy()
+        this.enemyOverlays.delete(id)
+      }
+    }
+  }
+
+  private reapStalePlayers(players: ReadonlyArray<NetPlayer>): void {
+    const live = new Set(players.map((p) => p.sessionId))
+    for (const [sid, g] of this.peerGraphics) {
+      if (!live.has(sid)) {
+        g.destroy()
+        this.peerGraphics.delete(sid)
+      }
+    }
+    for (const [sid, ov] of this.playerOverlays) {
+      if (!live.has(sid)) {
+        ov.hpBg.destroy()
+        ov.hpFill.destroy()
+        ov.name?.destroy()
+        this.playerOverlays.delete(sid)
       }
     }
   }
@@ -233,14 +423,28 @@ export class NetArenaScene extends BaseScene {
     this.enemyGraphics.clear()
     for (const g of this.peerGraphics.values()) g.destroy()
     this.peerGraphics.clear()
+    for (const ov of this.playerOverlays.values()) {
+      ov.hpBg.destroy()
+      ov.hpFill.destroy()
+      ov.name?.destroy()
+    }
+    this.playerOverlays.clear()
+    for (const ov of this.enemyOverlays.values()) {
+      ov.hpBg.destroy()
+      ov.hpFill.destroy()
+    }
+    this.enemyOverlays.clear()
     // Drop the connection — entering the menu means leaving the room.
     void netClient.leave()
+    this.prevState = null
+    this.lastWave = -1
+    this.lastGold = -1
+    this.lastAlive = -1
+    this.lastTotal = -1
   }
 }
 
 function enemyColorOf(typeId: string): number {
-  // Cheap: hash typeId into a stable hue so each enemy type reads distinct
-  // even before sprites land.
   let hash = 0
   for (const c of typeId) hash = (hash * 31 + c.charCodeAt(0)) | 0
   return 0x202020 + (Math.abs(hash) & 0x3f3f3f)
