@@ -1,4 +1,5 @@
 import type { AccessoryKind, AttackKind, ClothingKind, WeaponShape } from '@stick/content'
+type WeaponBack = { shape: WeaponShape; blade: number }
 import type Phaser from 'phaser'
 
 import { AccessoryRenderer } from './AccessoryRenderer'
@@ -132,6 +133,12 @@ export class StickmanRenderer {
   draw(g: Phaser.GameObjects.Graphics, p: StickmanRenderState, scale = 1): void {
     g.clear()
 
+    // Drop shadow under the actor (legacy drawShadow lines 3665-3671). Sits
+    // visually beneath everything because we draw it before the body. It
+    // stretches along the velocity vector and flattens slightly when moving
+    // fast — gives the top-down view a sense of weight.
+    this.drawShadow(g, p, scale)
+
     const G = STICKMAN_GEOMETRY
     // Hurt-flash pulse: body thickens and head puffs while absorbing the hit.
     // `hurtFlash` is set to ~0.12s on connect; we ramp from full → 0 over that
@@ -239,6 +246,13 @@ export class StickmanRenderer {
       )
     }
 
+    // ---- WEAPON ON BACK (legacy 2459-2468) ----
+    // Sheathed silhouette behind the torso when the player isn't swinging.
+    // Drawn before the torso line so the body covers the grip.
+    if (!isAttacking && p.weapon) {
+      this.drawWeaponOnBack(g, p.weapon, scale, shoulderY)
+    }
+
     // ---- TORSO ----
     g.lineStyle(lineWidth, color, 1)
     g.beginPath()
@@ -265,6 +279,17 @@ export class StickmanRenderer {
     g.fillStyle(color, 1)
     g.fillCircle(0, headY, G.HEAD_RADIUS * scale * headMul)
 
+    // ---- EYE (legacy lines 2512-2519) ----
+    // Single white pupil offset toward facing. Skipped on white/light bodies
+    // (jester/iceKing lookups in legacy used color !== '#fff' && '#e0e0e0')
+    // and during hurtFlash so the white-flash silhouette stays clean.
+    if (p.hurtFlash <= 0 && color !== HURT_COLOR && color !== 0xe0e0e0 && color !== 0xffffff) {
+      const headR = G.HEAD_RADIUS * scale
+      const dirX = p.facingX >= 0 ? 1 : -1
+      g.fillStyle(0xffffff, 1)
+      g.fillCircle(headR * 0.4 * dirX, headY - headR * 0.1, headR * 0.22)
+    }
+
     // ---- ACCESSORY (drawn on top of head) ----
     if (p.accessory && p.accessory !== 'none' && p.hurtFlash <= 0) {
       AccessoryRenderer.draw(g, p.accessory, {
@@ -279,6 +304,23 @@ export class StickmanRenderer {
     this.drawArms(g, p, color, lineWidth, scale, shoulderY)
 
     g.restore()
+  }
+
+  private drawShadow(g: Phaser.GameObjects.Graphics, p: StickmanRenderState, scale: number): void {
+    const speed = Math.hypot(p.vx, p.vy)
+    // Stretch with movement, capped so it doesn't look like a smear at top speed.
+    const stretchX = 1 + Math.min(0.6, speed * 0.06)
+    const flatY = 1 - Math.min(0.45, speed * 0.045)
+    // Drift opposite to motion so the actor appears to "outrun" their shadow.
+    const drift = Math.min(8, speed * 0.6)
+    const dirLen = speed > 0.01 ? 1 / speed : 0
+    const offX = -p.vx * dirLen * drift
+    const offY = -p.vy * dirLen * drift * 0.5
+
+    const baseR = 16 * scale
+    const yOffset = 6 * scale
+    g.fillStyle(0x000000, 0.45)
+    g.fillEllipse(offX, yOffset + offY, baseR * 1.5 * stretchX, 6 * scale * flatY)
   }
 
   private computeColor(p: StickmanRenderState): number {
@@ -388,6 +430,43 @@ export class StickmanRenderer {
     g.strokePath()
     g.fillStyle(color, 1)
     g.fillCircle(handX, handY, lineWidth * 0.55)
+  }
+
+  /**
+   * Sheathed weapon on the back during idle. Diagonal silhouette behind the
+   * shoulders — short hilt + thin blade. Color comes from the weapon shape
+   * configuration so each weapon reads distinct.
+   */
+  private drawWeaponOnBack(
+    g: Phaser.GameObjects.Graphics,
+    weapon: WeaponBack,
+    scale: number,
+    shoulderY: number,
+  ): void {
+    // Anchor between the shoulders, tilted ~25° from vertical.
+    const baseX = -2 * scale
+    const baseY = shoulderY + 4 * scale
+    const length = 26 * scale
+    const tilt = 0.4 // radians
+    const tipX = baseX + Math.sin(-tilt) * length
+    const tipY = baseY - Math.cos(-tilt) * length
+    // Blade.
+    g.lineStyle(2.4 * scale, weapon.blade, 0.85)
+    g.beginPath()
+    g.moveTo(baseX, baseY)
+    g.lineTo(tipX, tipY)
+    g.strokePath()
+    // Crossguard / pommel hint near the base.
+    g.lineStyle(1.5 * scale, 0x3a2a1a, 0.9)
+    const hiltAngle = -tilt + Math.PI / 2
+    const hx = baseX + Math.sin(hiltAngle) * 3 * scale
+    const hy = baseY - Math.cos(hiltAngle) * 3 * scale
+    const hx2 = baseX - Math.sin(hiltAngle) * 3 * scale
+    const hy2 = baseY + Math.cos(hiltAngle) * 3 * scale
+    g.beginPath()
+    g.moveTo(hx, hy)
+    g.lineTo(hx2, hy2)
+    g.strokePath()
   }
 
   /**

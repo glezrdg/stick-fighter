@@ -138,10 +138,14 @@ export class CombatSystem {
     player.vx += aim.x * lunge
     player.vy += aim.y * lunge
 
+    const wasFinalStep = player.attackStep === this.attackPatterns.length - 1
     player.attackStep = (player.attackStep + 1) % this.attackPatterns.length
     player.attackStepTimer = COMBO_RESET_SEC
 
     this.bus.emit('combo:advance', { count: player.attackStep })
+    if (wasFinalStep) {
+      this.bus.emit('combo:finisher', { kind: pattern.kind })
+    }
 
     this.onSwing?.({
       originX: player.x,

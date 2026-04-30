@@ -3,13 +3,25 @@ import { register } from '../registry'
 
 /**
  * Stay at range and fire a projectile every `attackCooldown` seconds.
- * If the player closes the gap, retreat. If the player is too far, close
- * the distance slightly to stay engaged.
+ *
+ * Reactivity model (post-nerf):
+ *   - The shot has an explicit telegraphed WINDUP. When the cooldown hits 0
+ *     the enemy enters an aiming state (`attackTimer` set, projectile NOT
+ *     yet spawned). The shared TelegraphRenderer reads `attackTimer` and
+ *     paints a warning on the floor. The projectile only spawns after the
+ *     mid-strike point — giving the player ~250 ms to dodge.
+ *   - We also gate the shot on max ENGAGE_RANGE so an off-screen kiter
+ *     doesn't snipe from beyond the camera. If the player is too far we
+ *     keep closing distance instead of firing.
  *
  * Used by mage (orb) and spear (spear projectile).
  */
-const RETREAT_BUFFER = 100 // px buffer over attackRange before kiting away
-const ENGAGE_OUTER = 1.5 // multiplier of attackRange beyond which we close in
+const RETREAT_BUFFER = 50 // px buffer over attackRange before kiting away
+const ENGAGE_OUTER = 1.4 // multiplier of attackRange beyond which we close in
+/** Hard cap on shooting distance — beyond this they don't even aim, regardless
+ *  of the type's attackRange. Roughly the typical camera viewport so they
+ *  can't snipe from off-screen. */
+const MAX_FIRE_DIST = 360
 const PROJECTILE_LIFE_SEC = 2.0
 /** Spear projectile speed (legacy 9 px/frame @60Hz → 540 px/s). */
 const SPEAR_SPEED_PX_SEC = 540
@@ -17,6 +29,11 @@ const SPEAR_SPEED_PX_SEC = 540
 const ORB_SPEED_PX_SEC = 360
 /** Hitbox radius for the projectile. */
 const PROJECTILE_RADIUS = 10
+/** How long the windup pose / telegraph stays up before the shot lands. */
+const WINDUP_SEC = 0.55
+/** Fraction of WINDUP at which the projectile actually spawns. The
+ *  telegraph is shown during the first ~55% so this lines up with the strike. */
+const FIRE_PROGRESS = 0.6
 
 export const rangedKite = (ctx: BehaviorContext): void => {
   const { enemy, type, player, projectiles, dt } = ctx
@@ -39,8 +56,48 @@ export const rangedKite = (ctx: BehaviorContext): void => {
   enemy.facingX = nx
   enemy.facingY = ny
 
-  const keepDist = type.attackRange + RETREAT_BUFFER
+  // ---- Windup state — fire when the timer crosses FIRE_PROGRESS ----
+  const winding = enemy.behaviorState['winding'] === true
+  if (winding && enemy.attackTimer > 0 && enemy.attackDuration > 0) {
+    const progress = 1 - enemy.attackTimer / enemy.attackDuration
+    const fired = enemy.behaviorState['fired'] === true
+    if (!fired && progress >= FIRE_PROGRESS) {
+      // Re-aim at the player's current position (so dodging mid-windup pays).
+      const fdx = player.x - enemy.x
+      const fdy = player.y - enemy.y
+      const fdist = Math.hypot(fdx, fdy) || 1
+      const fnx = fdx / fdist
+      const fny = fdy / fdist
+      const projType = type.id === 'spear' ? 'spear' : 'orb'
+      const speed = type.id === 'spear' ? SPEAR_SPEED_PX_SEC : ORB_SPEED_PX_SEC
+      projectiles.spawn({
+        type: projType,
+        x: enemy.x,
+        y: enemy.y - 30,
+        dirX: fnx,
+        dirY: fny,
+        speed,
+        dmg: enemy.dmg,
+        life: PROJECTILE_LIFE_SEC,
+        ownerId: enemy.id,
+        radius: PROJECTILE_RADIUS,
+      })
+      enemy.behaviorState['fired'] = true
+    }
+    // Keep the enemy planted while aiming (no kiting mid-windup).
+    enemy.vx *= 0.85
+    enemy.vy *= 0.85
+    return
+  }
 
+  // Reset state once the windup animation finishes.
+  if (winding && enemy.attackTimer <= 0) {
+    enemy.behaviorState['winding'] = false
+    enemy.behaviorState['fired'] = false
+  }
+
+  // ---- Movement (kite) ----
+  const keepDist = type.attackRange + RETREAT_BUFFER
   if (dist < keepDist) {
     // Player too close — back away.
     enemy.vx = -nx * type.speed * 0.7
@@ -55,29 +112,17 @@ export const rangedKite = (ctx: BehaviorContext): void => {
     enemy.vy *= 0.92
   }
 
-  // Fire if cooldown is ready.
-  if (enemy.attackCooldown === 0) {
-    const projType = type.id === 'spear' ? 'spear' : 'orb'
-    const speed = type.id === 'spear' ? SPEAR_SPEED_PX_SEC : ORB_SPEED_PX_SEC
-    projectiles.spawn({
-      type: projType,
-      x: enemy.x,
-      y: enemy.y - 30, // shoulder-ish
-      dirX: nx,
-      dirY: ny,
-      speed,
-      dmg: enemy.dmg,
-      life: PROJECTILE_LIFE_SEC,
-      ownerId: enemy.id,
-      radius: PROJECTILE_RADIUS,
-    })
-    enemy.attackCooldown = type.attackCooldown
-    // Trigger the swing visual (no melee strikeAt — only animation).
+  // ---- Trigger the windup if cooldown is ready and the player is in
+  // engagement range (no off-screen sniping). ----
+  if (enemy.attackCooldown === 0 && dist <= MAX_FIRE_DIST) {
     enemy.attackKind = 'slashR'
-    enemy.attackTimer = 0.25
-    enemy.attackDuration = 0.25
+    enemy.attackTimer = WINDUP_SEC
+    enemy.attackDuration = WINDUP_SEC
     enemy.attackDirX = nx
     enemy.attackDirY = ny
+    enemy.attackCooldown = type.attackCooldown
+    enemy.behaviorState['winding'] = true
+    enemy.behaviorState['fired'] = false
   }
 }
 

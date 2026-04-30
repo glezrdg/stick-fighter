@@ -27,18 +27,52 @@ describe('rangedKite behavior', () => {
     player = createPlayer({ x: 600, y: 400 })
   })
 
-  it('fires a projectile when off cooldown', () => {
-    const enemy = createEnemy({ type: mage, x: 800, y: 400 }) // distance ~200, in band
+  /** Run the behavior repeatedly until either a projectile spawns or we
+   *  exceed `maxTicks` (windup is ~0.55s × 0.6 = 0.33s, so ~25 ticks @60Hz).
+   *  EnemySystem normally decrements `attackTimer`; we mirror that here so
+   *  unit tests can run the behavior in isolation. */
+  const tickUntilFire = (
+    enemy: Enemy,
+    type: typeof mage,
+    maxTicks = 60,
+  ): { fired: boolean; ticks: number } => {
+    const dt = 1 / 60
+    for (let i = 0; i < maxTicks; i++) {
+      rangedKite({ enemy, type, player, bus, rng: createRng(0), dt, projectiles })
+      if (enemy.attackTimer > 0) enemy.attackTimer = Math.max(0, enemy.attackTimer - dt)
+      if (projectiles.getAll().length > 0) return { fired: true, ticks: i + 1 }
+    }
+    return { fired: false, ticks: maxTicks }
+  }
+
+  it('fires a projectile after a windup, not on the same tick', () => {
+    const enemy = createEnemy({ type: mage, x: player.x + 130, y: player.y }) // in band
+    // First tick triggers windup but does NOT spawn the projectile.
     rangedKite({ enemy, type: mage, player, bus, rng: createRng(0), dt: 1 / 60, projectiles })
-    expect(projectiles.getAll().length).toBe(1)
-    expect(projectiles.getAll()[0]!.type).toBe('orb')
+    expect(projectiles.getAll().length).toBe(0)
+    expect(enemy.attackTimer).toBeGreaterThan(0)
+    expect(enemy.behaviorState['winding']).toBe(true)
     expect(enemy.attackCooldown).toBeCloseTo(mage.attackCooldown, 5)
+
+    // After the windup finishes, the projectile must have spawned.
+    const result = tickUntilFire(enemy, mage)
+    expect(result.fired).toBe(true)
+    expect(projectiles.getAll()[0]!.type).toBe('orb')
   })
 
   it('uses the spear projType for spear enemies', () => {
-    const enemy = createEnemy({ type: spear, x: 800, y: 400 })
-    rangedKite({ enemy, type: spear, player, bus, rng: createRng(0), dt: 1 / 60, projectiles })
+    const enemy = createEnemy({ type: spear, x: player.x + 130, y: player.y })
+    const result = tickUntilFire(enemy, spear)
+    expect(result.fired).toBe(true)
     expect(projectiles.getAll()[0]!.type).toBe('spear')
+  })
+
+  it('does NOT fire when the player is beyond MAX_FIRE_DIST (off-screen)', () => {
+    // 500 px is well beyond the 360 px hard cap.
+    const enemy = createEnemy({ type: mage, x: player.x + 500, y: player.y })
+    rangedKite({ enemy, type: mage, player, bus, rng: createRng(0), dt: 1 / 60, projectiles })
+    expect(enemy.behaviorState['winding']).not.toBe(true)
+    expect(projectiles.getAll().length).toBe(0)
   })
 
   it('does NOT fire while on cooldown', () => {

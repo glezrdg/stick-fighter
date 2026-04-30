@@ -39,6 +39,10 @@ export type GameEvents = {
   'enemy:death': { enemyId: string; byPlayer: boolean }
   'combo:advance': { count: number }
   'combo:reset': Record<string, never>
+  /** Fired when the player completes the last attack of the combo cycle.
+   *  Distinct from `combo:advance` so HUD/scenes can react with extra juice
+   *  (gold flash, longer hit-stop, sfx) without parsing the count modulo. */
+  'combo:finisher': { kind: string }
   /** Fired when a destructible obstacle explodes (barrel/crate). */
   'obstacle:explode': { x: number; y: number; type: 'barrel' | 'crate' | 'column' }
 

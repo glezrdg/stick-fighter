@@ -22,6 +22,7 @@ import type { Projectile } from '../entities/Projectile'
 import { ApiClient } from '../platform/api'
 import { RunQueue } from '../platform/runQueue'
 import { type ArenaProps, ArenaPropsRenderer } from '../render/ArenaPropsRenderer'
+import { DeathFxRenderer } from '../render/DeathFxRenderer'
 import { GoreRenderer } from '../render/GoreRenderer'
 import { ObstacleRenderer } from '../render/ObstacleRenderer'
 import { ParticleRenderer } from '../render/ParticleRenderer'
@@ -37,8 +38,10 @@ import {
 import { VAMPIRE_HEAL_PER_KILL } from '../skills/Vampire'
 import { type EffectiveStats, BuffSystem } from '../systems/BuffSystem'
 import { CombatSystem } from '../systems/CombatSystem'
+import { DeathFxSystem } from '../systems/DeathFxSystem'
 import { EnemySystem } from '../systems/EnemySystem'
 import { GoreSystem } from '../systems/GoreSystem'
+import { requestHitStop, tickHitStop } from '../systems/hitStop'
 import { updateMovement } from '../systems/MovementSystem'
 import { ObstacleSystem } from '../systems/ObstacleSystem'
 import { ParticleSystem } from '../systems/ParticleSystem'
@@ -75,6 +78,7 @@ export class ArenaScene extends BaseScene {
   private gore!: GoreSystem
   private obstacleSys!: ObstacleSystem
   private particles!: ParticleSystem
+  private deathFx!: DeathFxSystem
   private stickman!: StickmanRenderer
   private dustAcc = 0
   private arenaProps!: ArenaProps
@@ -88,6 +92,7 @@ export class ArenaScene extends BaseScene {
   private obstacleGraphics!: Phaser.GameObjects.Graphics
   private particleGraphics!: Phaser.GameObjects.Graphics
   private telegraphGraphics!: Phaser.GameObjects.Graphics
+  private deathFxGraphics!: Phaser.GameObjects.Graphics
 
   private tornadoTickAcc = 0
   private busUnsubs: Array<() => void> = []
@@ -95,6 +100,8 @@ export class ArenaScene extends BaseScene {
   /** Wall-clock seconds since the last hit-stop landed. Used to throttle
    *  freeze frames so AOE / fast combos don't turn the game into slideshow. */
   private hitStopCooldown = 0
+  /** Reusable scratch buffer for the pure hitStop helpers (avoid per-frame allocs). */
+  private readonly hitStopState = { hitStop: 0, cooldown: 0 }
   private loadout!: RunLoadout
   private lastAliveCount = -1
   private currentWaveTotal = 0
@@ -157,6 +164,7 @@ export class ArenaScene extends BaseScene {
     this.skillSystem = new SkillSystem({ bus: this.bus })
     this.gore = new GoreSystem({ rng: this.rng })
     this.particles = new ParticleSystem({ rng: this.rng })
+    this.deathFx = new DeathFxSystem()
     this.stickman = new StickmanRenderer()
 
     // ---- Arena visuals ----
@@ -177,6 +185,10 @@ export class ArenaScene extends BaseScene {
     // Particles render on top of everything except popups.
     this.particleGraphics = this.add.graphics()
     this.particleGraphics.setDepth(900)
+    // Death FX (white flash + ring) sit on top of particles so the kill
+    // pop reads even through smoke.
+    this.deathFxGraphics = this.add.graphics()
+    this.deathFxGraphics.setDepth(950)
 
     // ---- Camera ----
     this.cameras.main.setBounds(0, 0, ARENA.width, ARENA.height)
@@ -199,6 +211,7 @@ export class ArenaScene extends BaseScene {
         this.onCombatHit(attackerId, targetId, dmg, crit),
       ),
       this.bus.on('skill:cast', ({ skillId }) => this.onSkillCast(skillId)),
+      this.bus.on('combo:finisher', () => this.onComboFinisher()),
       this.bus.on('obstacle:explode', ({ x, y }) => {
         this.particles.spawnShockwave(x, y, 0xff8000, 24)
         this.particles.spawnAuraBurst(x, y, 0xffe080, 16)
@@ -245,16 +258,13 @@ export class ArenaScene extends BaseScene {
     if (this.runState.paused) return
     this.runState.elapsed += realDt
 
-    // Hit-stop decays on REAL dt; while active gameplay dt is forced to 0 so
-    // the impact frame "lands". Camera shake still ticks via Phaser internally.
-    if (this.runState.hitStop > 0) {
-      this.runState.hitStop = Math.max(0, this.runState.hitStop - realDt)
-    }
-    // Cooldown between freezes (ticks on REAL dt so AOE / over-buffed players
-    // don't stack freezes into a slideshow).
-    if (this.hitStopCooldown > 0) {
-      this.hitStopCooldown = Math.max(0, this.hitStopCooldown - realDt)
-    }
+    // Hit-stop decays on REAL dt; the helper also drains the throttle window
+    // so AOE / over-buffed players can't stack freezes into a slideshow.
+    this.hitStopState.hitStop = this.runState.hitStop
+    this.hitStopState.cooldown = this.hitStopCooldown
+    tickHitStop(this.hitStopState, realDt)
+    this.runState.hitStop = this.hitStopState.hitStop
+    this.hitStopCooldown = this.hitStopState.cooldown
     // Decay slow-mo on REAL dt; scale gameplay dt while active (legacy 1318: 0.4×).
     if (this.runState.slowMo > 0) {
       this.runState.slowMo = Math.max(0, this.runState.slowMo - realDt)
@@ -298,6 +308,7 @@ export class ArenaScene extends BaseScene {
     this.gore.update(dt)
     this.obstacleSys.update(dt)
     this.particles.update(dt)
+    this.deathFx.update(dt)
     ArenaPropsRenderer.update(this.arenaProps, dt, (lo, hi) => this.rng.float(lo, hi))
 
     // Footstep dust while running.
@@ -344,10 +355,15 @@ export class ArenaScene extends BaseScene {
     ArenaPropsRenderer.drawFloor(this.arenaPropsGraphics, this.arenaProps)
     this.renderGore()
     this.telegraphGraphics.clear()
-    TelegraphRenderer.draw(this.telegraphGraphics, enemies)
+    TelegraphRenderer.draw(this.telegraphGraphics, enemies, (e) => {
+      const behaviors = getEnemyType(e.typeId).behaviors
+      return behaviors.includes('rangedKite') ? 'ranged' : 'melee'
+    })
     this.renderObstacles(this.obstacleSys.getAll())
     this.particleGraphics.clear()
     ParticleRenderer.draw(this.particleGraphics, this.particles.getAll())
+    this.deathFxGraphics.clear()
+    DeathFxRenderer.draw(this.deathFxGraphics, this.deathFx.getAll())
     this.playerGraphics.setPosition(this.player.x, this.player.y)
     this.stickman.draw(this.playerGraphics, {
       ...this.player,
@@ -522,18 +538,28 @@ export class ArenaScene extends BaseScene {
   }
 
   /**
-   * Apply a hit-stop with throttle + cap so AOE / over-buffed combos can't
-   * stack freezes into a slideshow:
-   *  - skipped if another freeze landed in the last 80ms
-   *  - resulting freeze is capped at 0.18s total
+   * Apply a hit-stop with throttle + cap (delegates to the pure helper).
+   * Skipped if another freeze landed in the last 80ms; resulting freeze is
+   * capped at 0.18s total.
    */
   private requestHitStop(duration: number): void {
-    const HIT_STOP_THROTTLE = 0.08
-    const HIT_STOP_CAP = 0.18
-    if (this.hitStopCooldown > 0) return
-    const next = Math.min(HIT_STOP_CAP, Math.max(this.runState.hitStop, duration))
-    this.runState.hitStop = next
-    this.hitStopCooldown = HIT_STOP_THROTTLE
+    this.hitStopState.hitStop = this.runState.hitStop
+    this.hitStopState.cooldown = this.hitStopCooldown
+    if (requestHitStop(this.hitStopState, duration)) {
+      this.runState.hitStop = this.hitStopState.hitStop
+      this.hitStopCooldown = this.hitStopState.cooldown
+    }
+  }
+
+  /** Final attack of the combo cycle — gold flash + extended hit-stop +
+   *  bigger camera shake. Pure feel — gameplay damage already happened in
+   *  CombatSystem. */
+  private onComboFinisher(): void {
+    this.particles.spawnAuraBurst(this.player.x, this.player.y - 24, 0xffd54a, 36)
+    this.particles.spawnShockwave(this.player.x, this.player.y - 18, 0xffd54a, 24)
+    this.requestHitStop(0.14)
+    this.runState.cameraShake = Math.max(this.runState.cameraShake, 0.32)
+    this.runState.slowMo = Math.max(this.runState.slowMo, 0.12)
   }
 
   private onSkillCast(_skillId: string): void {
@@ -563,6 +589,11 @@ export class ArenaScene extends BaseScene {
     // of simultaneous deaths (AOE wipe) doesn't compound into a long slideshow.
     const deathStop = type.scale >= 1.3 ? 0.18 : 0.1
     this.requestHitStop(deathStop)
+
+    // Death pop: white core flash + expanding ring. Adds a small particle
+    // shockwave so the kill reads even when many enemies die at once.
+    this.deathFx.add({ x: enemy.x, y: enemy.y, scale: type.scale })
+    this.particles.spawnShockwave(enemy.x, enemy.y - 18, 0xffffff, type.scale >= 1.3 ? 18 : 10)
 
     if (!byPlayer) return
     const goldGain = Math.floor(type.goldReward * this.stats.goldMul)
@@ -804,6 +835,7 @@ export class ArenaScene extends BaseScene {
     this.gore?.clear()
     this.obstacleSys?.clear()
     this.particles?.clear()
+    this.deathFx?.clear()
   }
 }
 
