@@ -639,16 +639,37 @@ export class ArenaScene extends BaseScene {
       gold: this.runState.gold,
       reason,
     })
-    this.persistRunResults().catch((err) => console.error('[arena] save persist failed:', err))
+    this.persistRunResults(reason).catch((err) =>
+      console.error('[arena] save persist failed:', err),
+    )
     this.scene.start('GameOver', { runState: this.runState })
   }
 
-  private async persistRunResults(): Promise<void> {
+  private async persistRunResults(reason: 'death' | 'quit'): Promise<void> {
     const save = this.services.save
     save.gold += this.runState.gold
     save.totalKills += this.runState.kills
     if (this.runState.wave > save.bestWave) save.bestWave = this.runState.wave
     await this.services.saveStore.save(save)
+
+    // Submit to leaderboard (no-op if API not configured / network down).
+    if (this.runState.wave >= 1) {
+      const { ApiClient } = await import('../platform/api')
+      const buffsRecord: Record<string, number> = { ...this.runState.runBuffs }
+      const result = await ApiClient.submitRun({
+        seed: this.runState.seed,
+        wave: this.runState.wave,
+        kills: this.runState.kills,
+        gold: this.runState.gold,
+        durationSec: this.runState.elapsed,
+        weapon: this.loadout.weaponId,
+        buffs: buffsRecord,
+        reason,
+      })
+      if (result?.rank) {
+        console.info(`[arena] leaderboard rank #${result.rank}`)
+      }
+    }
   }
 
   private cleanup(): void {

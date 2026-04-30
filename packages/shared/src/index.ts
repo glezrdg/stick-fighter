@@ -10,3 +10,21 @@ export {
   SaveV1,
   defaultSave,
 } from './types/save'
+
+export { HealthResponseSchema, type HealthResponse } from './api/health'
+
+export {
+  RunReportSchema,
+  RunSubmitResponseSchema,
+  type RunReport,
+  type RunSubmitResponse,
+} from './api/runs'
+
+export {
+  LeaderboardEntrySchema,
+  LeaderboardQuerySchema,
+  LeaderboardResponseSchema,
+  type LeaderboardEntry,
+  type LeaderboardQuery,
+  type LeaderboardResponse,
+} from './api/leaderboard'
