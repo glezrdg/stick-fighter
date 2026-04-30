@@ -24,6 +24,7 @@ import { GoreRenderer } from '../render/GoreRenderer'
 import { ObstacleRenderer } from '../render/ObstacleRenderer'
 import { ParticleRenderer } from '../render/ParticleRenderer'
 import { StickmanRenderer } from '../render/StickmanRenderer'
+import { TelegraphRenderer } from '../render/TelegraphRenderer'
 // Side-effect: register every skill.
 import '../skills'
 import {
@@ -84,6 +85,7 @@ export class ArenaScene extends BaseScene {
   private gorePartsGraphics!: Phaser.GameObjects.Graphics
   private obstacleGraphics!: Phaser.GameObjects.Graphics
   private particleGraphics!: Phaser.GameObjects.Graphics
+  private telegraphGraphics!: Phaser.GameObjects.Graphics
 
   private tornadoTickAcc = 0
   private busUnsubs: Array<() => void> = []
@@ -163,6 +165,9 @@ export class ArenaScene extends BaseScene {
 
     // Floor layer (blood pools, corpses) goes BELOW the player and parts.
     this.goreFloorGraphics = this.add.graphics()
+    // Telegraph decals sit above the floor + gore but below the actors so the
+    // stickmen visually stand on the warning, not under it.
+    this.telegraphGraphics = this.add.graphics()
     this.obstacleGraphics = this.add.graphics()
     this.gorePartsGraphics = this.add.graphics()
     this.playerGraphics = this.add.graphics()
@@ -317,10 +322,27 @@ export class ArenaScene extends BaseScene {
     for (const e of enemies)
       this.obstacleSys.applyCollision(e, 16 * (getEnemyType(e.typeId).scale || 1))
 
+    // Camera look-ahead: nudge the camera ~36px toward the player's heading,
+    // smoothed exponentially so it tracks but doesn't twitch on direction
+    // changes. setFollowOffset uses an inverted sign (negative offset shifts
+    // the view in the +direction).
+    {
+      const vmag = Math.hypot(this.player.vx, this.player.vy)
+      const moving = vmag > 0.4
+      const targetOffsetX = moving ? -(this.player.vx / Math.max(vmag, 1)) * 36 : 0
+      const targetOffsetY = moving ? -(this.player.vy / Math.max(vmag, 1)) * 36 : 0
+      const cur = this.cameras.main.followOffset
+      const lerp = 1 - Math.pow(0.001, dt) // ~ time-rate 60% per second
+      cur.x += (targetOffsetX - cur.x) * lerp
+      cur.y += (targetOffsetY - cur.y) * lerp
+    }
+
     // Render.
     this.arenaPropsGraphics.clear()
     ArenaPropsRenderer.drawFloor(this.arenaPropsGraphics, this.arenaProps)
     this.renderGore()
+    this.telegraphGraphics.clear()
+    TelegraphRenderer.draw(this.telegraphGraphics, enemies)
     this.renderObstacles(this.obstacleSys.getAll())
     this.particleGraphics.clear()
     ParticleRenderer.draw(this.particleGraphics, this.particles.getAll())
@@ -474,10 +496,13 @@ export class ArenaScene extends BaseScene {
     this.particles.spawnSlashFx(enemy.x, enemy.y - 18, dirX, dirY, this.auraColor)
     this.particles.spawnBlood(enemy.x, enemy.y - 18, dirX, dirY, crit ? 18 : 10)
 
-    // Hit-stop only on direct player swings (not on AOE / DOT ticks). Killing
-    // blows from any source still freeze, but they're handled in onEnemyDeath.
+    // Hit-stop only on direct player swings (not on AOE / DOT ticks). A swing
+    // is "primary" when the player is mid-attack from CombatSystem; tornado,
+    // skills, projectiles and obstacle blasts hit while no swing is active.
+    // Killing blows go through onEnemyDeath instead.
     const isKill = enemy.hp <= 0
-    const isPrimary = attackerId === 'player'
+    const isPrimary =
+      attackerId === 'player' && this.player.attackTimer > 0 && this.player.attackKind !== null
     if (isPrimary && !isKill) {
       this.requestHitStop(crit ? 0.09 : 0.05)
     }
@@ -556,7 +581,9 @@ export class ArenaScene extends BaseScene {
     }
   }
 
-  /** Spawn a floating combat number above an enemy. Auto-despawns after 700ms. */
+  /** Spawn a floating combat number above an enemy. Size scales with the
+   *  amount, arcs up-and-sideways with Back.easeOut so the number "pops"
+   *  before fading. Auto-despawns after 800ms. */
   private spawnDamagePopup(
     x: number,
     y: number,
@@ -567,24 +594,53 @@ export class ArenaScene extends BaseScene {
     const MAX = 14
     if (this.activePopups >= MAX && !crit) return
     if (this.activePopups >= MAX * 1.5) return
+
+    // Pull the numeric magnitude from the leading "-N" / "+N" so the visual
+    // weight tracks actual damage. Falls back to mid-size if it can't parse.
+    const numMatch = /(\d+(?:\.\d+)?)/.exec(text)
+    const dmgValue = numMatch ? parseFloat(numMatch[1]!) : 10
+    // Map dmg → font size: 12px floor, 28px ceiling, crits get +6px floor.
+    const baseSize = Math.max(12, Math.min(28, 11 + dmgValue * 0.18))
+    const fontSize = crit ? Math.max(20, baseSize + 6) : baseSize
+
+    // Arc: each popup picks a small lateral drift so multiples don't stack.
+    const driftX = (this.rng.next() - 0.5) * 36
+    const peakY = y - 40 - (crit ? 12 : 0)
+
     const txt = this.add
       .text(x, y, text, {
         fontFamily: 'Inter, system-ui, sans-serif',
-        fontSize: crit ? '20px' : '14px',
+        fontSize: `${Math.round(fontSize)}px`,
         color: color ?? (crit ? '#ff5050' : '#ffffff'),
         fontStyle: crit ? 'bold' : 'normal',
         stroke: '#000000',
-        strokeThickness: 3,
+        strokeThickness: crit ? 4 : 3,
       })
       .setOrigin(0.5, 0.5)
       .setDepth(1000)
+      .setScale(0.6)
     this.activePopups++
+
+    // Scale-in pop (Back.easeOut), then arc up + fade out.
     this.tweens.add({
       targets: txt,
-      y: y - 30,
+      scale: crit ? 1.15 : 1,
+      duration: 140,
+      ease: 'Back.easeOut',
+    })
+    this.tweens.add({
+      targets: txt,
+      x: x + driftX,
+      y: peakY,
+      duration: 380,
+      ease: 'Quad.easeOut',
+    })
+    this.tweens.add({
+      targets: txt,
       alpha: 0,
-      duration: 700,
-      ease: 'Cubic.easeOut',
+      duration: 380,
+      delay: 420,
+      ease: 'Cubic.easeIn',
       onComplete: () => {
         txt.destroy()
         this.activePopups--

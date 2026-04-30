@@ -15,11 +15,12 @@ COPY apps/api/package.json ./apps/api/
 COPY packages/shared/package.json ./packages/shared/
 RUN pnpm install --frozen-lockfile
 
-# ---- build (compila TS → dist) ----
+# ---- build (compila TS → dist; shared primero, después api) ----
 FROM deps AS build
 COPY tsconfig.base.json ./
 COPY apps/api ./apps/api
 COPY packages/shared ./packages/shared
+RUN pnpm --filter @stick/shared build
 RUN pnpm --filter @stick/api build
 
 # ---- prune (aplana deps de @stick/api a un solo node_modules portable) ----

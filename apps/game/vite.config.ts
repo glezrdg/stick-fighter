@@ -4,6 +4,12 @@ import solid from 'vite-plugin-solid'
 
 export default defineConfig({
   plugins: [solid()],
+  resolve: {
+    // Resuelve `@stick/shared` a sus fuentes TS en dev/build de Vite — el
+    // export `"source"` apunta a src/index.ts. Los consumidores Node (apps/api)
+    // usan el `import`/`default` que apunta a dist/.
+    conditions: ['source'],
+  },
   server: {
     port: 5173,
     host: true,

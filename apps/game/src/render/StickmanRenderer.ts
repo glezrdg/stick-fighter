@@ -390,6 +390,35 @@ export class StickmanRenderer {
     g.fillCircle(handX, handY, lineWidth * 0.55)
   }
 
+  /**
+   * Faint motion-line arc that traces the path the hand swept during a swing.
+   * Two thin layers (outer = transparent, inner = brighter) read as a smear
+   * frame without re-animating the skeleton. Pure cosmetic.
+   */
+  private drawSwingSmear(
+    g: Phaser.GameObjects.Graphics,
+    cx: number,
+    cy: number,
+    radius: number,
+    startAng: number,
+    endAng: number,
+    lineWidth: number,
+  ): void {
+    // Phaser's `arc` uses standard angles where 0 = +x; our hand uses
+    // (sin, -cos) where 0 = +y up. Convert by subtracting PI/2.
+    const a0 = startAng - Math.PI / 2
+    const a1 = endAng - Math.PI / 2
+    const ccw = a1 < a0
+    g.lineStyle(lineWidth * 1.4, 0xffffff, 0.18)
+    g.beginPath()
+    g.arc(cx, cy, radius, a0, a1, ccw)
+    g.strokePath()
+    g.lineStyle(lineWidth * 0.55, 0xffffff, 0.55)
+    g.beginPath()
+    g.arc(cx, cy, radius, a0, a1, ccw)
+    g.strokePath()
+  }
+
   private drawIdleArm(
     g: Phaser.GameObjects.Graphics,
     rootX: number,
@@ -437,6 +466,12 @@ export class StickmanRenderer {
       switch (p.attackKind) {
         case 'slashR': {
           const ang = dirAngle + slashRSwingCurve(progress)
+          // Smear: faint arc trailing from the windup angle to the current
+          // angle during the strike phase (0.4..0.8). Pure cosmetic.
+          if (progress > 0.4 && progress < 0.85) {
+            const startAng = dirAngle + slashRSwingCurve(Math.max(0.4, progress - 0.18))
+            this.drawSwingSmear(g, 0, shoulderYOff, armLen, startAng, ang, lineWidth)
+          }
           this.drawSlashArm(g, rightShoulderX, shoulderYOff, ang, armLen, color, lineWidth)
           this.drawIdleArm(g, leftShoulderX, shoulderYOff, scale, -1, color, lineWidth)
           this.drawWeaponFromShoulder(g, p.weapon, rightShoulderX, shoulderYOff, ang, armLen, scale)
@@ -444,6 +479,10 @@ export class StickmanRenderer {
         }
         case 'slashL': {
           const ang = dirAngle + slashLSwingCurve(progress)
+          if (progress > 0.4 && progress < 0.85) {
+            const startAng = dirAngle + slashLSwingCurve(Math.max(0.4, progress - 0.18))
+            this.drawSwingSmear(g, 0, shoulderYOff, armLen, startAng, ang, lineWidth)
+          }
           this.drawSlashArm(g, leftShoulderX, shoulderYOff, ang, armLen, color, lineWidth)
           this.drawIdleArm(g, rightShoulderX, shoulderYOff, scale, 1, color, lineWidth)
           this.drawWeaponFromShoulder(g, p.weapon, leftShoulderX, shoulderYOff, ang, armLen, scale)
@@ -451,6 +490,11 @@ export class StickmanRenderer {
         }
         case 'chop': {
           const ang = dirAngle + chopSwingCurve(progress)
+          // Vertical chop smear during the down-stroke.
+          if (progress > 0.35 && progress < 0.8) {
+            const startAng = dirAngle + chopSwingCurve(Math.max(0.35, progress - 0.15))
+            this.drawSwingSmear(g, 0, shoulderYOff, armLen, startAng, ang, lineWidth)
+          }
           const handX = Math.sin(ang) * armLen
           const handY = -Math.cos(ang) * armLen
           g.lineStyle(lineWidth, color, 1)
