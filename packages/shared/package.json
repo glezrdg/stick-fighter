@@ -10,7 +10,6 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "build": "tsc",
     "test": "echo \"no tests yet\" && exit 0"
   },
   "dependencies": {

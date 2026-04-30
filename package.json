@@ -10,7 +10,7 @@
   },
   "scripts": {
     "dev": "pnpm --filter @stick/game dev",
-    "build": "pnpm -r --filter \"./packages/**\" build && pnpm --filter @stick/game build",
+    "build": "pnpm --filter @stick/game build",
     "test": "pnpm -r test",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
