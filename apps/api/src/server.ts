@@ -37,7 +37,14 @@ async function buildServer() {
     origin: (origin, cb) => {
       if (!origin) return cb(null, true) // curl / server-side
       if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true)
-      cb(new Error('CORS rejected'), false)
+      // Allow any *.vercel.app preview URL so PR/branch deploys work.
+      try {
+        const host = new URL(origin).host
+        if (host.endsWith('.vercel.app')) return cb(null, true)
+      } catch {
+        // fall through
+      }
+      cb(new Error(`CORS rejected: ${origin}`), false)
     },
     credentials: true,
   })

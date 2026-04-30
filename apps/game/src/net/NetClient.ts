@@ -87,8 +87,7 @@ export class NetClient {
   async hostRoom(playerName: string): Promise<RoomSnapshot | null> {
     try {
       const room = await this.getClient().create('stick_fight', this.joinOptions(playerName))
-      this.bindRoom(room)
-      return this.lastSnapshot
+      return this.bindRoom(room)
     } catch (err) {
       console.warn('[net] hostRoom failed:', err)
       return null
@@ -103,8 +102,7 @@ export class NetClient {
         'stick_fight',
         this.joinOptions(playerName, lobbyCode),
       )
-      this.bindRoom(room)
-      return this.lastSnapshot
+      return this.bindRoom(room)
     } catch (err) {
       console.warn('[net] joinRoom failed:', err)
       return null
@@ -149,8 +147,18 @@ export class NetClient {
     return this.room !== null
   }
 
-  private bindRoom(room: Colyseus.Room): void {
+  /**
+   * Wire bus-style listeners on the room and seed `lastSnapshot` from the
+   * initial state Colyseus already synced during the `create`/`join` round-trip.
+   * Returns that initial snapshot so callers know the connection succeeded.
+   */
+  private bindRoom(room: Colyseus.Room): RoomSnapshot {
     this.room = room
+    // After `create()` / `join()` resolves the initial state has already
+    // arrived, so we can read `room.state` immediately. `onStateChange`
+    // will keep firing for every subsequent diff.
+    const initial = stateToSnapshot(room.state as unknown)
+    this.lastSnapshot = initial
     room.onStateChange((state: unknown) => {
       this.lastSnapshot = stateToSnapshot(state)
       for (const fn of [...this.listeners]) {
@@ -165,6 +173,7 @@ export class NetClient {
       this.room = null
       this.lastSnapshot = null
     })
+    return initial
   }
 }
 
