@@ -5,7 +5,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createEventBus, type EventBus } from '../app/eventBus'
 import { createPlayer, type Player } from '../entities/Player'
 
-import { AUTO_AIM_RADIUS, COMBO_RESET_SEC, CombatSystem } from './CombatSystem'
+import { AUTO_AIM_RADIUS, COMBO_RESET_SEC, CombatSystem, type EnemyTarget } from './CombatSystem'
+
+const target = (over: Partial<EnemyTarget> & Pick<EnemyTarget, 'x' | 'y' | 'hp'>): EnemyTarget => ({
+  id: over.id ?? 'e1',
+  hurtFlash: over.hurtFlash ?? 0,
+  ...over,
+})
 
 describe('CombatSystem', () => {
   let bus: EventBus
@@ -90,7 +96,7 @@ describe('CombatSystem', () => {
   })
 
   it('uses the nearest enemy within AUTO_AIM_RADIUS to override facing for the swing', () => {
-    const enemies = [{ x: 0, y: 100, hp: 5 }] // straight down
+    const enemies = [target({ x: 0, y: 100, hp: 5 })] // straight down
     player.facingX = 1
     player.facingY = 0
     const c = new CombatSystem({ bus, attackPatterns, getEnemies: () => enemies })
@@ -103,7 +109,7 @@ describe('CombatSystem', () => {
   })
 
   it('ignores enemies beyond AUTO_AIM_RADIUS', () => {
-    const enemies = [{ x: AUTO_AIM_RADIUS + 50, y: 0, hp: 5 }]
+    const enemies = [target({ x: AUTO_AIM_RADIUS + 50, y: 0, hp: 5 })]
     player.facingX = 0
     player.facingY = -1
     const c = new CombatSystem({ bus, attackPatterns, getEnemies: () => enemies })
@@ -113,11 +119,70 @@ describe('CombatSystem', () => {
   })
 
   it('ignores dead enemies for auto-aim', () => {
-    const enemies = [{ x: 50, y: 0, hp: 0 }] // dead and very close
+    const enemies = [target({ x: 50, y: 0, hp: 0 })] // dead and very close
     player.facingX = -1
     player.facingY = 0
     const c = new CombatSystem({ bus, attackPatterns, getEnemies: () => enemies })
     c.tryAttack(player)
     expect(player.attackDirX).toBeCloseTo(-1, 5)
+  })
+
+  // ---- Hit resolution -------------------------------------------
+
+  it('damages an enemy in front and within reach', () => {
+    const enemy = target({ id: 'e7', x: 80, y: 0, hp: 5 })
+    const c = new CombatSystem({ bus, attackPatterns, getEnemies: () => [enemy] })
+    player.facingX = 1
+    c.tryAttack(player)
+    expect(enemy.hp).toBeLessThan(5)
+    expect(enemy.hurtFlash).toBeGreaterThan(0)
+  })
+
+  it('emits combat:hit and enemy:death when the killing blow lands', () => {
+    const hitHandler = vi.fn()
+    const deathHandler = vi.fn()
+    bus.on('combat:hit', hitHandler)
+    bus.on('enemy:death', deathHandler)
+    const enemy = target({ id: 'e9', x: 60, y: 0, hp: 1 })
+    const c = new CombatSystem({ bus, attackPatterns, getEnemies: () => [enemy] })
+    player.facingX = 1
+    c.tryAttack(player)
+    expect(hitHandler).toHaveBeenCalledWith(
+      expect.objectContaining({ attackerId: 'player', targetId: 'e9' }),
+    )
+    expect(deathHandler).toHaveBeenCalledWith({ enemyId: 'e9', byPlayer: true })
+  })
+
+  it('does NOT hit enemies behind the swing direction (cone test)', () => {
+    // Front enemy will be auto-aimed; behind enemy must not be hit by slashR.
+    const front = target({ id: 'ef', x: 60, y: 0, hp: 5 })
+    const behind = target({ id: 'eb', x: -60, y: 0, hp: 5 })
+    const c = new CombatSystem({ bus, attackPatterns, getEnemies: () => [front, behind] })
+    player.facingX = 1
+    c.tryAttack(player)
+    expect(front.hp).toBeLessThan(5)
+    expect(behind.hp).toBe(5)
+  })
+
+  it('spin pattern (`all`) hits enemies in any direction within reach', () => {
+    // First cycle the combo step up to spin (the 6th).
+    const front = target({ id: 'ef', x: 60, y: 0, hp: 5 })
+    const behind = target({ id: 'eb', x: -60, y: 0, hp: 5 })
+    const c = new CombatSystem({ bus, attackPatterns, getEnemies: () => [front, behind] })
+    // Manually set step to spin so the test focuses on the AOE rule.
+    player.attackStep = 5
+    player.attackTimer = 0
+    player.facingX = 1
+    c.tryAttack(player)
+    expect(front.hp).toBeLessThan(5)
+    expect(behind.hp).toBeLessThan(5)
+  })
+
+  it('does NOT hit enemies beyond pattern reach', () => {
+    const far = target({ id: 'ef', x: 1000, y: 0, hp: 5 })
+    const c = new CombatSystem({ bus, attackPatterns, getEnemies: () => [far] })
+    player.facingX = 1
+    c.tryAttack(player)
+    expect(far.hp).toBe(5)
   })
 })

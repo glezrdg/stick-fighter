@@ -40,7 +40,7 @@ export function slashRSwingCurve(progress: number): number {
   }
 }
 
-/** The minimal slice of player state the renderer needs. */
+/** The minimal slice of player/enemy state the renderer needs. */
 export interface StickmanRenderState {
   vx: number
   vy: number
@@ -54,6 +54,8 @@ export interface StickmanRenderState {
   attackDirY: number
   hurtFlash: number
   iframes: number
+  /** Optional body color override (player defaults to black, enemies to per-type color). */
+  color?: number
 }
 
 const DEFAULT_COLOR = 0x000000
@@ -159,7 +161,7 @@ export class StickmanRenderer {
       const blink = Math.floor(p.iframes * 12) % 2 === 0
       if (blink) return HURT_COLOR
     }
-    return DEFAULT_COLOR
+    return p.color ?? DEFAULT_COLOR
   }
 
   /**

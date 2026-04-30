@@ -9,19 +9,29 @@ export const AUTO_AIM_RADIUS = 220
 export const COMBO_RESET_SEC = 1.5
 /** Forward velocity boost applied at the start of each attack (px/frame at 60Hz). */
 const LUNGE_PX_PER_FRAME = 2.5
+/** Cone half-angle for melee hits: dot(attackDir, toEnemy) > this connects. */
+const HIT_CONE_DOT_THRESHOLD = 0.3
+/** Base damage before pattern multipliers and weapon damage (F2 plugs in weapons). */
+const BASE_PLAYER_DAMAGE = 1
+/** Hurt flash duration applied to enemies on hit (seconds). */
+const ENEMY_HURT_FLASH_SEC = 0.12
 
-/** Minimal projection of an enemy needed for auto-aim. F1.4 fills this in. */
+/** Minimum projection of an enemy used by auto-aim and hit detection. */
 export interface EnemyTarget {
   x: number
   y: number
   hp: number
+  hurtFlash: number
+  /** Per-instance id (used in `combat:hit` / `enemy:death` events). */
+  id: string
+  /** Set when the enemy is killed so callers can award gold + bookkeeping. */
+  goldReward?: number
 }
 
 export interface CombatSystemOptions {
   bus: EventBus
   attackPatterns: AttackPatterns
-  /** Called by tryAttack() to find the nearest enemy for auto-aim.
-   *  Return null when there are no enemies or auto-aim should be skipped. */
+  /** Returns the live enemies (used for both auto-aim and hit resolution). */
   getEnemies?: () => Iterable<EnemyTarget>
 }
 
@@ -62,9 +72,11 @@ export class CombatSystem {
   }
 
   /**
-   * Begin the next attack of the combo. No-op if the player is already
-   * mid-swing (the legacy uses `attackQueue` for combo3-style buffering;
-   * we'll add that with the combo3 passive in F2).
+   * Begin the next attack of the combo, then resolve hits against enemies
+   * in range immediately (matches the legacy: damage applies at attack
+   * start, animation plays after).
+   *
+   * No-op if the player is already mid-swing.
    */
   tryAttack(player: Player): void {
     if (player.attackTimer > 0) return
@@ -72,9 +84,7 @@ export class CombatSystem {
     const pattern = this.attackPatterns[player.attackStep]
     if (!pattern) return // defensive — attackStep should always be 0..5
 
-    // Auto-aim: nearest enemy in AUTO_AIM_RADIUS overrides facing for this swing.
     const aim = this.computeAimDirection(player)
-
     const durSec = pattern.durFrames / 60
     player.attackKind = pattern.kind
     player.attackTimer = durSec
@@ -84,15 +94,45 @@ export class CombatSystem {
     player.facingX = aim.x
     player.facingY = aim.y
 
-    // Lunge in the attack direction (matches legacy line 1735-1737, simplified).
+    // Lunge in the attack direction.
     player.vx += aim.x * LUNGE_PX_PER_FRAME
     player.vy += aim.y * LUNGE_PX_PER_FRAME
 
-    // Advance the combo cycle.
     player.attackStep = (player.attackStep + 1) % this.attackPatterns.length
     player.attackStepTimer = COMBO_RESET_SEC
 
     this.bus.emit('combo:advance', { count: player.attackStep })
+
+    // ---- Resolve hits ----
+    const enemies = this.getEnemies?.()
+    if (!enemies) return
+
+    const dmg = BASE_PLAYER_DAMAGE * pattern.dmgMul
+    for (const e of enemies) {
+      if (e.hp <= 0) continue
+      const dx = e.x - player.x
+      const dy = e.y - player.y
+      const dist = Math.hypot(dx, dy)
+      if (dist > pattern.reach) continue
+      // `all` patterns (spin) hit every enemy in reach regardless of facing.
+      if (!pattern.all) {
+        const inv = dist > 0 ? 1 / dist : 0
+        const dot = dx * inv * aim.x + dy * inv * aim.y
+        if (dot < HIT_CONE_DOT_THRESHOLD) continue
+      }
+      const wasDead = e.hp <= 0
+      e.hp -= dmg
+      e.hurtFlash = ENEMY_HURT_FLASH_SEC
+      this.bus.emit('combat:hit', {
+        attackerId: 'player',
+        targetId: e.id,
+        dmg,
+        crit: false,
+      })
+      if (!wasDead && e.hp <= 0) {
+        this.bus.emit('enemy:death', { enemyId: e.id, byPlayer: true })
+      }
+    }
   }
 
   private computeAimDirection(player: Player): { x: number; y: number } {
