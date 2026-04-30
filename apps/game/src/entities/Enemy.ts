@@ -26,6 +26,8 @@ export interface Enemy {
   hp: number
   maxHp: number
   hurtFlash: number
+  /** Damage dealt to the player on a connecting strike. Scaled by wave at spawn. */
+  dmg: number
 
   // --- locomotion / animation ---
   walkPhase: number
@@ -47,7 +49,16 @@ export interface Enemy {
 
 let nextEnemyId = 1
 
-export function createEnemy(opts: { type: EnemyType; x: number; y: number }): Enemy {
+export function createEnemy(opts: {
+  type: EnemyType
+  x: number
+  y: number
+  /** Optional HP override (used by WaveSystem to apply per-wave hpScale). */
+  hp?: number
+  /** Optional damage override (used by WaveSystem to apply per-wave dmgScale). */
+  dmg?: number
+}): Enemy {
+  const hp = opts.hp ?? opts.type.hp
   return {
     id: `e${nextEnemyId++}`,
     typeId: opts.type.id,
@@ -57,9 +68,10 @@ export function createEnemy(opts: { type: EnemyType; x: number; y: number }): En
     vy: 0,
     facingX: 1,
     facingY: 0,
-    hp: opts.type.hp,
-    maxHp: opts.type.hp,
+    hp,
+    maxHp: hp,
     hurtFlash: 0,
+    dmg: opts.dmg ?? opts.type.dmg,
     walkPhase: 0,
     attackTimer: 0,
     attackDuration: 0,

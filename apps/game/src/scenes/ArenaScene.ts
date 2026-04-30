@@ -8,6 +8,7 @@ import '../enemies'
 import { type RunState, createRunState } from '../core/runState'
 import type { Enemy } from '../entities/Enemy'
 import { type Player, createPlayer } from '../entities/Player'
+import type { Projectile } from '../entities/Projectile'
 import { StickmanRenderer } from '../render/StickmanRenderer'
 // Side-effect: register every skill.
 import '../skills'
@@ -21,6 +22,7 @@ import { type EffectiveStats, BuffSystem } from '../systems/BuffSystem'
 import { CombatSystem } from '../systems/CombatSystem'
 import { EnemySystem } from '../systems/EnemySystem'
 import { updateMovement } from '../systems/MovementSystem'
+import { ProjectileSystem } from '../systems/ProjectileSystem'
 import { SkillSystem } from '../systems/SkillSystem'
 import { WaveSystem } from '../systems/WaveSystem'
 
@@ -48,10 +50,12 @@ export class ArenaScene extends BaseScene {
   private waves!: WaveSystem
   private enemySys!: EnemySystem
   private skillSystem!: SkillSystem
+  private projectiles!: ProjectileSystem
   private stickman!: StickmanRenderer
 
   private playerGraphics!: Phaser.GameObjects.Graphics
   private enemyGraphics = new Map<string, Phaser.GameObjects.Graphics>()
+  private projectileGraphics!: Phaser.GameObjects.Graphics
 
   private tornadoTickAcc = 0
   private busUnsubs: Array<() => void> = []
@@ -79,13 +83,18 @@ export class ArenaScene extends BaseScene {
 
     // ---- Systems ----
     this.waves = new WaveSystem({ bus: this.bus, rng: this.rng })
+    this.projectiles = new ProjectileSystem({ bus: this.bus })
     this.combat = new CombatSystem({
       bus: this.bus,
       attackPatterns,
       getEnemies: () => this.waves.getEnemies(),
       getDmgMul: () => this.stats.dmgMul,
     })
-    this.enemySys = new EnemySystem({ bus: this.bus, rng: this.rng })
+    this.enemySys = new EnemySystem({
+      bus: this.bus,
+      rng: this.rng,
+      projectiles: this.projectiles,
+    })
     this.skillSystem = new SkillSystem({ bus: this.bus })
     this.stickman = new StickmanRenderer()
 
@@ -99,6 +108,7 @@ export class ArenaScene extends BaseScene {
     for (let y = 0; y <= ARENA.height; y += 60) grid.lineBetween(0, y, ARENA.width, y)
 
     this.playerGraphics = this.add.graphics()
+    this.projectileGraphics = this.add.graphics()
 
     // ---- Camera ----
     this.cameras.main.setBounds(0, 0, ARENA.width, ARENA.height)
@@ -169,9 +179,10 @@ export class ArenaScene extends BaseScene {
       }
     }
 
-    // Enemy tick + waves.
+    // Enemy + projectile tick + waves.
     const enemies = this.waves.getEnemies()
     this.enemySys.update(enemies, this.player, dt)
+    this.projectiles.update(this.player, dt)
     this.waves.update(dt)
     this.waves.reapDead()
 
@@ -179,6 +190,7 @@ export class ArenaScene extends BaseScene {
     this.playerGraphics.setPosition(this.player.x, this.player.y)
     this.stickman.draw(this.playerGraphics, this.player)
     this.renderEnemies(enemies)
+    this.renderProjectiles(this.projectiles.getAll())
 
     // Camera shake.
     if (this.runState.cameraShake > 0) {
@@ -292,6 +304,37 @@ export class ArenaScene extends BaseScene {
     }
   }
 
+  private renderProjectiles(projectiles: readonly Projectile[]): void {
+    const g = this.projectileGraphics
+    g.clear()
+    for (const p of projectiles) {
+      if (p.type === 'spear') {
+        // Triangle pointing along velocity, with a small "shaft".
+        const angle = Math.atan2(p.vy, p.vx)
+        const tipLen = 16
+        const tx = p.x + Math.cos(angle) * tipLen
+        const ty = p.y + Math.sin(angle) * tipLen
+        const bx = p.x - Math.cos(angle) * tipLen * 0.6
+        const by = p.y - Math.sin(angle) * tipLen * 0.6
+        g.lineStyle(3, 0x5a3a1a, 1)
+        g.beginPath()
+        g.moveTo(bx, by)
+        g.lineTo(tx, ty)
+        g.strokePath()
+        g.fillStyle(0xcfd8dc, 1)
+        g.fillCircle(tx, ty, 3)
+      } else {
+        // Default: glowing orb.
+        g.fillStyle(0x5a30b0, 0.4)
+        g.fillCircle(p.x, p.y, p.radius * 1.6)
+        g.fillStyle(0xa872f0, 1)
+        g.fillCircle(p.x, p.y, p.radius)
+        g.fillStyle(0xffffff, 0.85)
+        g.fillCircle(p.x, p.y, p.radius * 0.45)
+      }
+    }
+  }
+
   private endRun(reason: 'death' | 'quit'): void {
     this.bus.emit('run:end', {
       wave: this.runState.wave,
@@ -307,6 +350,7 @@ export class ArenaScene extends BaseScene {
     this.busUnsubs = []
     for (const g of this.enemyGraphics.values()) g.destroy()
     this.enemyGraphics.clear()
+    this.projectiles?.clear()
   }
 }
 

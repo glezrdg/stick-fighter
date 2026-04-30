@@ -7,6 +7,8 @@ import * as enemyRegistry from '../enemies'
 import type { Enemy } from '../entities/Enemy'
 import type { Player } from '../entities/Player'
 
+import type { ProjectileSystem } from './ProjectileSystem'
+
 /** Player invulnerability after taking a hit (seconds). */
 const PLAYER_IFRAME_SEC = 0.5
 /** Player hurt flash duration (seconds). */
@@ -17,6 +19,7 @@ const ENEMY_VELOCITY_LERP = 0.25
 export interface EnemySystemOptions {
   bus: EventBus
   rng: Rng
+  projectiles: ProjectileSystem
 }
 
 /**
@@ -31,10 +34,12 @@ export interface EnemySystemOptions {
 export class EnemySystem {
   private readonly bus: EventBus
   private readonly rng: Rng
+  private readonly projectiles: ProjectileSystem
 
   constructor(opts: EnemySystemOptions) {
     this.bus = opts.bus
     this.rng = opts.rng
+    this.projectiles = opts.projectiles
   }
 
   update(enemies: Enemy[], player: Player, dt: number): void {
@@ -48,7 +53,15 @@ export class EnemySystem {
       for (const bid of type.behaviors) {
         const behavior = enemyRegistry.tryGet(bid)
         if (behavior) {
-          behavior({ enemy: e, type, player, bus: this.bus, rng: this.rng, dt })
+          behavior({
+            enemy: e,
+            type,
+            player,
+            bus: this.bus,
+            rng: this.rng,
+            dt,
+            projectiles: this.projectiles,
+          })
         }
       }
 
@@ -97,7 +110,7 @@ export class EnemySystem {
     const dist = Math.hypot(dx, dy)
     if (dist > type.attackRange + 6 /* small forgiveness */) return
 
-    const dmg = type.dmg
+    const dmg = enemy.dmg
     player.hp = Math.max(0, player.hp - dmg)
     player.hurtFlash = PLAYER_HURT_FLASH_SEC
     player.iframes = PLAYER_IFRAME_SEC

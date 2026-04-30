@@ -5,8 +5,6 @@ import type { EventBus } from '../app/eventBus'
 import { ARENA } from '../core/arena'
 import { type Enemy, createEnemy } from '../entities/Enemy'
 
-/** How many enemies a wave contains. F1.4 keeps it static; F2 scales by wave number. */
-const WAVE_SIZE = 5
 /** Seconds between consecutive spawns. */
 const SPAWN_INTERVAL_SEC = 0.4
 /** Seconds of pause between the last kill and the next wave starting. */
@@ -18,17 +16,29 @@ export interface WaveSystemOptions {
 }
 
 /**
- * Manages wave lifecycle: spawn enemies from arena edges, count down spawns
- * and alive enemies, fire wave:start / wave:complete events on the bus.
+ * Wave lifecycle + spawning. Replaces the legacy `startWave`, `pickEnemyType`,
+ * and the inline scaling math (lines 1051-1102, 1113-1114).
+ *
+ * Per-wave totals: `5 + floor(wave * 2.5) + floor(wave / 2)` (legacy 1054).
+ * HP / DMG scaling applied at spawn time (legacy 1113-1114).
+ *
+ * Pool weights (legacy 1085-1102):
+ *   grunt always available; ninja from wave 2; spear w3; brute w4; dual w5;
+ *   berserk w6; mage w7; heavy w8. Grunt slots are pruned by `min(15, wave*2)`
+ *   each wave, so by ~wave 8+ they're gone entirely and tougher enemies dominate.
+ *
+ * Boss waves: every wave divisible by 5 spawns a single boss as the FIRST
+ * enemy of the wave (replacing one of the regular slots).
  */
 export class WaveSystem {
   private readonly bus: EventBus
   private readonly rng: Rng
-  /** Currently-active enemies (live and dead — caller is responsible for removal). */
   private readonly enemies: Enemy[] = []
 
   private currentWave = 0
+  private waveTotal = 0
   private toSpawn = 0
+  private spawned = 0
   private spawnTimer = 0
   private interWaveTimer = 0
   private state: 'idle' | 'spawning' | 'awaiting-clear' | 'between-waves' = 'idle'
@@ -36,19 +46,18 @@ export class WaveSystem {
   constructor(opts: WaveSystemOptions) {
     this.bus = opts.bus
     this.rng = opts.rng
-
-    this.bus.on('enemy:death', () => this.onEnemyDeath())
   }
 
   startNextWave(): void {
     this.currentWave++
-    this.toSpawn = WAVE_SIZE
+    this.waveTotal = totalEnemiesForWave(this.currentWave)
+    this.toSpawn = this.waveTotal
+    this.spawned = 0
     this.spawnTimer = 0
     this.state = 'spawning'
-    this.bus.emit('wave:start', { wave: this.currentWave, totalEnemies: WAVE_SIZE })
+    this.bus.emit('wave:start', { wave: this.currentWave, totalEnemies: this.waveTotal })
   }
 
-  /** Externally readable. ArenaScene reads this to render and pass to systems. */
   getEnemies(): Enemy[] {
     return this.enemies
   }
@@ -62,7 +71,7 @@ export class WaveSystem {
       case 'spawning': {
         this.spawnTimer -= dt
         while (this.spawnTimer <= 0 && this.toSpawn > 0) {
-          this.spawnEnemy('grunt')
+          this.spawnNext()
           this.toSpawn--
           this.spawnTimer += SPAWN_INTERVAL_SEC
         }
@@ -95,14 +104,20 @@ export class WaveSystem {
     }
   }
 
-  private spawnEnemy(typeId: string): void {
+  private spawnNext(): void {
+    const isBossSlot = this.currentWave % 5 === 0 && this.spawned === 0
+    const typeId = isBossSlot ? 'boss' : pickEnemyType(this.currentWave, this.rng)
     const type: EnemyType = getEnemyType(typeId)
     const { x, y } = this.pickSpawnPoint()
-    this.enemies.push(createEnemy({ type, x, y }))
+    const hpScale = hpScaleForWave(this.currentWave)
+    const dmgScale = dmgScaleForWave(this.currentWave)
+    const hp = Math.ceil(type.hp * hpScale)
+    const dmg = Math.ceil(type.dmg * dmgScale)
+    this.enemies.push(createEnemy({ type, x, y, hp, dmg }))
+    this.spawned++
   }
 
   private pickSpawnPoint(): { x: number; y: number } {
-    // Pick one of the four arena edges, then a random position along it.
     const edge = this.rng.int(0, 4)
     const margin = 50
     const w = ARENA.width
@@ -123,9 +138,46 @@ export class WaveSystem {
     for (const e of this.enemies) if (e.hp > 0) return false
     return true
   }
+}
 
-  private onEnemyDeath(): void {
-    // The actual removal happens in `reapDead()` after the frame; we just
-    // need to ensure state transitions don't fire prematurely.
-  }
+// ---- Pure helpers (exported for tests + future server-side reuse) -------
+
+/** Total enemies in a given wave (legacy line 1054). */
+export function totalEnemiesForWave(wave: number): number {
+  return 5 + Math.floor(wave * 2.5) + Math.floor(wave / 2)
+}
+
+/** HP multiplier applied to each enemy spawned in this wave (legacy 1113). */
+export function hpScaleForWave(wave: number): number {
+  return 1 + Math.floor(wave / 5) * 0.5 + wave * 0.05
+}
+
+/** Damage multiplier applied to each enemy spawned in this wave (legacy 1114). */
+export function dmgScaleForWave(wave: number): number {
+  return 1 + Math.floor(wave / 5) * 0.2 + wave * 0.03
+}
+
+/** Weighted enemy-type pool by wave (legacy 1085-1102). Boss is handled
+ *  separately as the first spawn of every wave divisible by 5. */
+export function pickEnemyType(wave: number, rng: Rng): string {
+  const pool: string[] = []
+  pushN(pool, 'grunt', 20)
+  if (wave >= 2) pushN(pool, 'ninja', 8)
+  if (wave >= 3) pushN(pool, 'spear', 6)
+  if (wave >= 4) pushN(pool, 'brute', 8)
+  if (wave >= 5) pushN(pool, 'dual', 7)
+  if (wave >= 6) pushN(pool, 'berserk', 5)
+  if (wave >= 7) pushN(pool, 'mage', 5)
+  if (wave >= 8) pushN(pool, 'heavy', 4)
+
+  // Drop early grunt slots so harder enemies dominate later waves.
+  const gruntsToRemove = Math.min(15, wave * 2)
+  pool.splice(0, gruntsToRemove)
+
+  // Defensive: pool always contains at least one item.
+  return pool.length === 0 ? 'grunt' : rng.pick(pool)
+}
+
+function pushN<T>(arr: T[], v: T, n: number): void {
+  for (let i = 0; i < n; i++) arr.push(v)
 }

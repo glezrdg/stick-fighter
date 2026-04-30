@@ -4,6 +4,7 @@ import type { Rng } from '@stick/sim'
 import type { EventBus } from '../app/eventBus'
 import type { Enemy } from '../entities/Enemy'
 import type { Player } from '../entities/Player'
+import type { ProjectileSystem } from '../systems/ProjectileSystem'
 
 /** Context passed to a behavior on each tick. */
 export interface BehaviorContext {
@@ -14,6 +15,8 @@ export interface BehaviorContext {
   rng: Rng
   /** Seconds since the previous tick. */
   dt: number
+  /** Used by ranged behaviors to fire projectiles. */
+  projectiles: ProjectileSystem
 }
 
 /**
