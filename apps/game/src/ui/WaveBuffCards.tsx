@@ -1,7 +1,6 @@
 import { type WaveBuff, getWaveBuff } from '@stick/content'
+import { type EventBus } from '@stick/sim'
 import { type Component, For, Show, createSignal, onCleanup } from 'solid-js'
-
-import { type EventBus } from '../app/eventBus'
 
 interface WaveBuffCardsProps {
   bus: EventBus

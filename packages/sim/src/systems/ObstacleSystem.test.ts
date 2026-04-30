@@ -1,12 +1,12 @@
 // @vitest-environment node
 import { getEnemyType } from '@stick/content'
-import { createRng } from '@stick/sim'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { createEventBus, type EventBus } from '../app/eventBus'
 import { _resetEnemyIdsForTest, createEnemy, type Enemy } from '../entities/Enemy'
 import { _resetObstacleIdsForTest, createObstacle } from '../entities/Obstacle'
 import { type Player, createPlayer } from '../entities/Player'
+import { createEventBus, type EventBus } from '../eventBus'
+import { createRng } from '../rng'
 
 import { EXPLOSION_DMG_TO_ENEMIES, EXPLOSION_DMG_TO_PLAYER, ObstacleSystem } from './ObstacleSystem'
 

@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest'
 
-import { emptyRunBuffs } from '../core/runState'
+import { emptyRunBuffs } from '../runState'
 
 import { BuffSystem } from './BuffSystem'
 

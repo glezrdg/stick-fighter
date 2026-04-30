@@ -17,3 +17,12 @@ import './Combo3'
 
 export type { PassiveModifiers, Skill, SkillContext } from './Skill'
 export { _resetForTest, all, get, passivesOwned, register, tryGet } from './registry'
+
+// Specific tunable constants used by the host app for visuals timing.
+export {
+  SWORD_TORNADO_DURATION_SEC,
+  SWORD_TORNADO_TICK_SEC,
+  SWORD_TORNADO_RADIUS,
+  SWORD_TORNADO_DMG_MUL,
+} from './SwordTornado'
+export { VAMPIRE_HEAL_PER_KILL } from './Vampire'

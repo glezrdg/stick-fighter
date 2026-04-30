@@ -1,9 +1,9 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { createEventBus, type EventBus } from '../app/eventBus'
 import { createPlayer, type Player } from '../entities/Player'
 import { _resetProjectileIdsForTest } from '../entities/Projectile'
+import { createEventBus, type EventBus } from '../eventBus'
 
 import { ProjectileSystem } from './ProjectileSystem'
 

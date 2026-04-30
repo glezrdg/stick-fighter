@@ -1,6 +1,7 @@
 // @vitest-environment node
-import { createRng } from '@stick/sim'
 import { describe, expect, it } from 'vitest'
+
+import { createRng } from '../rng'
 
 import { dmgScaleForWave, hpScaleForWave, pickEnemyType, totalEnemiesForWave } from './WaveSystem'
 

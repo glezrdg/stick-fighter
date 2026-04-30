@@ -1,6 +1,6 @@
+import type { EventBus } from '@stick/sim'
 import { type Component, Show, createSignal, onCleanup } from 'solid-js'
 
-import type { EventBus } from '../app/eventBus'
 import { JOYSTICK_MAX_RADIUS } from '../core/input/InputController'
 
 interface JoystickOverlayProps {

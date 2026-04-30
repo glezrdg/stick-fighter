@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest'
 
-import { ARENA } from '../core/arena'
+import { ARENA } from '../arena'
 import { createPlayer } from '../entities/Player'
 
 import { updateMovement } from './MovementSystem'

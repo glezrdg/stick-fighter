@@ -1,7 +1,8 @@
 import type { AttackPatterns } from '@stick/content'
 
-import type { EventBus } from '../app/eventBus'
 import type { Player } from '../entities/Player'
+import type { EventBus } from '../eventBus'
+import { createRng } from '../rng'
 
 /** Auto-aim radius for melee attacks (matches legacy line 1681). */
 export const AUTO_AIM_RADIUS = 220
@@ -88,7 +89,16 @@ export class CombatSystem {
     this.getEnemies = opts.getEnemies
     this.getDmgMul = opts.getDmgMul ?? (() => 1)
     this.getCritChance = opts.getCritChance ?? (() => BASE_CRIT_CHANCE)
-    this.rngNext = opts.rngNext ?? Math.random
+    // Default to a fresh seeded RNG when not injected. Production callers
+    // (ArenaScene, server room) always pass a seeded RNG so the run is
+    // reproducible; tests that don't care about crit randomness can let
+    // this fallback run instead of wiring one up.
+    if (opts.rngNext) {
+      this.rngNext = opts.rngNext
+    } else {
+      const fallback = createRng(0)
+      this.rngNext = () => fallback.next()
+    }
     this.onSwing = opts.onSwing
   }
 

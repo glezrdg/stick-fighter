@@ -8,17 +8,36 @@ import {
   getSkin,
   getWeapon,
 } from '@stick/content'
-import { timeSeed } from '@stick/sim'
+import {
+  ARENA,
+  BuffSystem,
+  CAM_ZOOM,
+  CombatSystem,
+  type Enemy,
+  EnemySystem,
+  type EffectiveStats,
+  type Obstacle,
+  ObstacleSystem,
+  type Player,
+  type Projectile,
+  ProjectileSystem,
+  type RunState,
+  SWORD_TORNADO_DMG_MUL,
+  SWORD_TORNADO_RADIUS,
+  SWORD_TORNADO_TICK_SEC,
+  SkillSystem,
+  VAMPIRE_HEAL_PER_KILL,
+  WaveBuffSystem,
+  WaveSystem,
+  createPlayer,
+  createRunState,
+  requestHitStop,
+  tickHitStop,
+  timeSeed,
+  updateMovement,
+} from '@stick/sim'
 
 import { dtFromPhaser } from '../app/time'
-import { ARENA, CAM_ZOOM } from '../core/arena'
-// Side-effect: register every enemy behavior.
-import '../enemies'
-import { type RunState, createRunState } from '../core/runState'
-import type { Enemy } from '../entities/Enemy'
-import type { Obstacle } from '../entities/Obstacle'
-import { type Player, createPlayer } from '../entities/Player'
-import type { Projectile } from '../entities/Projectile'
 import { ApiClient } from '../platform/api'
 import { RunQueue } from '../platform/runQueue'
 import { type ArenaProps, ArenaPropsRenderer } from '../render/ArenaPropsRenderer'
@@ -28,27 +47,9 @@ import { ObstacleRenderer } from '../render/ObstacleRenderer'
 import { ParticleRenderer } from '../render/ParticleRenderer'
 import { StickmanRenderer } from '../render/StickmanRenderer'
 import { TelegraphRenderer } from '../render/TelegraphRenderer'
-// Side-effect: register every skill.
-import '../skills'
-import {
-  SWORD_TORNADO_DMG_MUL,
-  SWORD_TORNADO_RADIUS,
-  SWORD_TORNADO_TICK_SEC,
-} from '../skills/SwordTornado'
-import { VAMPIRE_HEAL_PER_KILL } from '../skills/Vampire'
-import { type EffectiveStats, BuffSystem } from '../systems/BuffSystem'
-import { CombatSystem } from '../systems/CombatSystem'
 import { DeathFxSystem } from '../systems/DeathFxSystem'
-import { EnemySystem } from '../systems/EnemySystem'
 import { GoreSystem } from '../systems/GoreSystem'
-import { requestHitStop, tickHitStop } from '../systems/hitStop'
-import { updateMovement } from '../systems/MovementSystem'
-import { ObstacleSystem } from '../systems/ObstacleSystem'
 import { ParticleSystem } from '../systems/ParticleSystem'
-import { ProjectileSystem } from '../systems/ProjectileSystem'
-import { SkillSystem } from '../systems/SkillSystem'
-import { WaveBuffSystem } from '../systems/WaveBuffSystem'
-import { WaveSystem } from '../systems/WaveSystem'
 
 import { BaseScene } from './BaseScene'
 
@@ -396,7 +397,6 @@ export class ArenaScene extends BaseScene {
         enemies: this.waves.getEnemies(),
         bus: this.bus,
         rng: this.rng,
-        scene: this,
         runState: this.runState,
         dmgMul: this.stats.dmgMul,
       },

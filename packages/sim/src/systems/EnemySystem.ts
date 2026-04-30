@@ -1,11 +1,11 @@
 import { type EnemyType, getEnemyType } from '@stick/content'
-import type { Rng } from '@stick/sim'
 
-import type { EventBus } from '../app/eventBus'
-import { ARENA } from '../core/arena'
+import { ARENA } from '../arena'
 import * as enemyRegistry from '../enemies'
 import type { Enemy } from '../entities/Enemy'
 import type { Player } from '../entities/Player'
+import type { EventBus } from '../eventBus'
+import type { Rng } from '../rng'
 
 import type { ProjectileSystem } from './ProjectileSystem'
 

@@ -10,8 +10,6 @@ import { GameOverScene } from './scenes/GameOverScene'
 import { MainMenuScene } from './scenes/MainMenuScene'
 import { PreloadScene } from './scenes/PreloadScene'
 import { AudioSystem } from './systems/AudioSystem'
-// Side-effect: every skill registers itself into the registry on import.
-import './skills'
 import { GameOverOverlay } from './ui/GameOverOverlay'
 import { HudRoot } from './ui/HudRoot'
 import { JoystickOverlay } from './ui/JoystickOverlay'

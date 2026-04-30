@@ -1,10 +1,10 @@
 // @vitest-environment node
-import { createRng } from '@stick/sim'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { createEventBus, type EventBus } from '../app/eventBus'
-import { createRunState, type RunState } from '../core/runState'
 import { createPlayer, type Player } from '../entities/Player'
+import { createEventBus, type EventBus } from '../eventBus'
+import { createRng } from '../rng'
+import { createRunState, type RunState } from '../runState'
 // Side-effect: register the real skills (Dash, KiBlast, etc).
 import '../skills'
 import type { SkillContext } from '../skills/Skill'
@@ -22,7 +22,6 @@ describe('SkillSystem', () => {
     enemies: [],
     bus,
     rng: createRng(0),
-    scene: {} as never,
     runState,
     dmgMul: 1,
   })

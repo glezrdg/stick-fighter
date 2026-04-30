@@ -1,15 +1,16 @@
-import type { Rng } from '@stick/sim'
-import type Phaser from 'phaser'
-
-import type { EventBus } from '../app/eventBus'
-import type { RunState } from '../core/runState'
 import type { Enemy } from '../entities/Enemy'
 import type { Player } from '../entities/Player'
+import type { EventBus } from '../eventBus'
+import type { Rng } from '../rng'
+import type { RunState } from '../runState'
 
 /**
  * Context handed to a Skill's `execute()`. Concrete skills receive everything
- * they may need (player, run state, bus, RNG, the active scene for tweens)
- * without reaching for globals.
+ * they may need (player, run state, bus, RNG) without reaching for globals.
+ *
+ * Visual side-effects (tweens, particles, camera shake) are emitted via the
+ * bus — `apps/game` listens and renders. The sim core stays free of any
+ * `Phaser.Scene` reference so this code runs unchanged on the server (F5).
  */
 export interface SkillContext {
   player: Player
@@ -17,8 +18,6 @@ export interface SkillContext {
   enemies: readonly Enemy[]
   bus: EventBus
   rng: Rng
-  /** Active scene — used for tweens, particles, camera shake. */
-  scene: Phaser.Scene
   /** Per-run mutable state (camera shake, slowMo, tornado timer, etc). */
   runState: RunState
   /** Damage multiplier from BuffSystem (weapon + skills + run buffs). */

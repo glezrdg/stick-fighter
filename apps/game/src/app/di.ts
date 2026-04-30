@@ -1,10 +1,8 @@
 import type { SaveCurrent } from '@stick/shared'
-import { type Rng, createRng, timeSeed } from '@stick/sim'
+import { type EventBus, type Rng, createEventBus, createRng, timeSeed } from '@stick/sim'
 
 import type { InputController } from '../core/input/InputController'
 import { SaveStore } from '../core/meta/saveStore'
-
-import { type EventBus, createEventBus } from './eventBus'
 
 /**
  * Long-lived services. Held by every Scene via `BaseScene.services`.

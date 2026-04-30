@@ -1,8 +1,8 @@
 import { type WaveBuff, getWaveBuff, waveBuffs as ALL_WAVE_BUFFS } from '@stick/content'
-import type { Rng } from '@stick/sim'
 
-import type { RunState } from '../core/runState'
 import type { Player } from '../entities/Player'
+import type { Rng } from '../rng'
+import type { RunState } from '../runState'
 
 /**
  * Wave-clear buff cards. Translates the legacy WAVE_BUFFS apply functions

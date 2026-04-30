@@ -1,4 +1,4 @@
-import type { RunState } from '../core/runState'
+import type { RunState } from '@stick/sim'
 
 import { BaseScene } from './BaseScene'
 

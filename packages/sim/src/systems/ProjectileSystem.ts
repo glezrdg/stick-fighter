@@ -1,7 +1,7 @@
-import type { EventBus } from '../app/eventBus'
-import { ARENA } from '../core/arena'
+import { ARENA } from '../arena'
 import type { Player } from '../entities/Player'
 import { type Projectile, createProjectile } from '../entities/Projectile'
+import type { EventBus } from '../eventBus'
 
 const PLAYER_HIT_RADIUS = 18 // matches Player collision radius
 const PLAYER_IFRAME_SEC = 0.5

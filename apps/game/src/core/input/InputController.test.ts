@@ -1,6 +1,5 @@
+import { createEventBus, type EventBus } from '@stick/sim'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-
-import { createEventBus, type EventBus } from '../../app/eventBus'
 
 import { InputController, JOYSTICK_MAX_RADIUS } from './InputController'
 

@@ -1,4 +1,4 @@
-import type { EventBus } from '../../app/eventBus'
+import type { EventBus } from '@stick/sim'
 
 /**
  * Unified input controller. Replaces the scattered keydown/keyup/touch*

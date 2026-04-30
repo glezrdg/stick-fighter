@@ -1,6 +1,5 @@
+import type { Obstacle } from '@stick/sim'
 import type Phaser from 'phaser'
-
-import type { Obstacle } from '../entities/Obstacle'
 
 const COLORS: Record<Obstacle['type'], { fill: number; stroke: number }> = {
   barrel: { fill: 0xa06820, stroke: 0x5a3008 },

@@ -1,7 +1,5 @@
+import { type EventBus, tryGetSkill as getSkill } from '@stick/sim'
 import { type Component, For, Show, createEffect, createSignal, onCleanup } from 'solid-js'
-
-import { type EventBus } from '../app/eventBus'
-import { tryGet as getSkill } from '../skills/registry'
 
 interface HudRootProps {
   bus: EventBus

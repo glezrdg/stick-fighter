@@ -2,8 +2,8 @@
 import { attackPatterns } from '@stick/content'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { createEventBus, type EventBus } from '../app/eventBus'
 import { createPlayer, type Player } from '../entities/Player'
+import { createEventBus, type EventBus } from '../eventBus'
 
 import { AUTO_AIM_RADIUS, COMBO_RESET_SEC, CombatSystem, type EnemyTarget } from './CombatSystem'
 

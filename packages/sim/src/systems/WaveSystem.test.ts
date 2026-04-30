@@ -1,9 +1,9 @@
 // @vitest-environment node
-import { createRng } from '@stick/sim'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { createEventBus, type EventBus } from '../app/eventBus'
 import { _resetEnemyIdsForTest } from '../entities/Enemy'
+import { createEventBus, type EventBus } from '../eventBus'
+import { createRng } from '../rng'
 
 import { WaveSystem } from './WaveSystem'
 

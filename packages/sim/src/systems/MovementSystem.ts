@@ -1,4 +1,4 @@
-import { ARENA } from '../core/arena'
+import { ARENA } from '../arena'
 import { type Player, PLAYER_DEFAULTS } from '../entities/Player'
 
 /**

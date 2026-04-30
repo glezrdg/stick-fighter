@@ -1,11 +1,9 @@
-import { type Weapon, weapons } from '@stick/content'
+import { type Aura, auras, type Weapon, weapons } from '@stick/content'
 import type { SaveCurrent } from '@stick/shared'
+import { type EventBus, allSkills, BuffSystem } from '@stick/sim'
 import { type Component, For, Show, createSignal, onCleanup } from 'solid-js'
 
-import { type EventBus } from '../app/eventBus'
 import type { SaveStore } from '../core/meta/saveStore'
-import { all as allSkills } from '../skills/registry'
-import { BuffSystem } from '../systems/BuffSystem'
 
 interface ShopOverlayProps {
   bus: EventBus
@@ -14,7 +12,7 @@ interface ShopOverlayProps {
   setSave: (next: SaveCurrent) => void
 }
 
-type Tab = 'weapons' | 'skills' | 'cosmetics'
+type Tab = 'weapons' | 'skills' | 'auras'
 
 /**
  * Shop overlay — paleta del legacy (LEGACY_SPEC §5.2):
@@ -78,6 +76,27 @@ export const ShopOverlay: Component<ShopOverlayProps> = (props) => {
     persist()
   }
 
+  const buyAura = (a: Aura) => {
+    const save = props.getSave()
+    if (save.cosmetics.aura.owned.includes(a.id)) return
+    if (a.premium) {
+      if (save.gems < a.cost) return
+      save.gems -= a.cost
+    } else {
+      if (save.gold < a.cost) return
+      save.gold -= a.cost
+    }
+    save.cosmetics.aura.owned.push(a.id)
+    persist()
+  }
+
+  const equipAura = (a: Aura) => {
+    const save = props.getSave()
+    if (!save.cosmetics.aura.owned.includes(a.id)) return
+    save.cosmetics.aura.equipped = a.id
+    persist()
+  }
+
   const toggleEquip = (id: string) => {
     const save = props.getSave()
     if (!save.skills.owned.includes(id)) return
@@ -111,7 +130,7 @@ export const ShopOverlay: Component<ShopOverlayProps> = (props) => {
           'align-items': 'center',
           padding: '20px 12px',
           'pointer-events': 'auto',
-          'z-index': 20,
+          'z-index': 35,
           'font-family': "'Russo One', sans-serif",
           color: '#fff',
         }}
@@ -140,14 +159,16 @@ export const ShopOverlay: Component<ShopOverlayProps> = (props) => {
           </div>
           <div
             style={{
+              display: 'flex',
+              gap: '14px',
               'font-family': "'Russo One', sans-serif",
               'font-size': '16px',
-              color: '#ffd54a',
               'letter-spacing': '1px',
               'text-shadow': '1px 1px 0 #000',
             }}
           >
-            🪙 {props.getSave().gold}
+            <span style={{ color: '#ffd54a' }}>🪙 {props.getSave().gold}</span>
+            <span style={{ color: '#9c80ff' }}>💎 {props.getSave().gems}</span>
           </div>
           <button
             type="button"
@@ -171,7 +192,7 @@ export const ShopOverlay: Component<ShopOverlayProps> = (props) => {
 
         {/* Tabs */}
         <div style={{ display: 'flex', gap: '6px', 'margin-bottom': '14px' }}>
-          <For each={['weapons', 'skills', 'cosmetics'] as const}>
+          <For each={['weapons', 'skills', 'auras'] as const}>
             {(t) => (
               <button
                 type="button"
@@ -296,19 +317,52 @@ export const ShopOverlay: Component<ShopOverlayProps> = (props) => {
             </For>
           </Show>
 
-          <Show when={tab() === 'cosmetics'}>
-            <div
-              style={{
-                'text-align': 'center',
-                padding: '40px 20px',
-                color: '#aaa',
-                'font-size': '13px',
-                'font-family': "'Russo One', sans-serif",
-                'letter-spacing': '2px',
+          <Show when={tab() === 'auras'}>
+            <For each={auras}>
+              {(a) => {
+                const save = () => props.getSave()
+                const owned = () => save().cosmetics.aura.owned.includes(a.id)
+                const equipped = () => save().cosmetics.aura.equipped === a.id
+                const canAfford = () => (a.premium ? save().gems >= a.cost : save().gold >= a.cost)
+                const swatch = a.color === 'rainbow' ? '#ff80ff' : a.color
+                return (
+                  <ShopRow
+                    icon="✦"
+                    iconBg={swatch}
+                    title={a.name + (a.premium ? ' 💎' : '')}
+                    desc={
+                      a.color === 'rainbow' ? 'Color cambiante en tiempo real' : `Color ${a.color}`
+                    }
+                    state={equipped() ? 'equipped' : owned() ? 'owned' : 'locked'}
+                  >
+                    <Show
+                      when={!owned()}
+                      fallback={
+                        <Show when={!equipped()}>
+                          <button
+                            type="button"
+                            onClick={() => equipAura(a)}
+                            style={shopBtn(true, true)}
+                          >
+                            EQUIPAR
+                          </button>
+                        </Show>
+                      }
+                    >
+                      <button
+                        type="button"
+                        onClick={() => buyAura(a)}
+                        disabled={!canAfford()}
+                        style={shopBtn(canAfford())}
+                      >
+                        COMPRAR {a.premium ? '💎' : '🪙'}
+                        {a.cost}
+                      </button>
+                    </Show>
+                  </ShopRow>
+                )
               }}
-            >
-              AURAS Y SKINS — PRÓXIMAMENTE
-            </div>
+            </For>
           </Show>
         </div>
       </div>
@@ -318,6 +372,8 @@ export const ShopOverlay: Component<ShopOverlayProps> = (props) => {
 
 const ShopRow: Component<{
   icon: string
+  /** Optional CSS color for a glowing disc behind the icon (used for auras). */
+  iconBg?: string
   title: string
   desc: string
   state: 'equipped' | 'owned' | 'locked'
@@ -345,7 +401,26 @@ const ShopRow: Component<{
         'box-shadow': glow(),
       }}
     >
-      <div style={{ 'font-size': '32px' }}>{props.icon}</div>
+      <div
+        style={{
+          width: '40px',
+          height: '40px',
+          'border-radius': '50%',
+          display: 'flex',
+          'align-items': 'center',
+          'justify-content': 'center',
+          background: props.iconBg
+            ? `radial-gradient(circle at 50% 35%, ${props.iconBg} 0%, rgba(0,0,0,0.6) 80%)`
+            : 'transparent',
+          'box-shadow': props.iconBg
+            ? `0 0 14px ${props.iconBg}, inset 0 1px 0 rgba(255,255,255,0.2)`
+            : 'none',
+          'font-size': '24px',
+          'flex-shrink': 0,
+        }}
+      >
+        {props.icon}
+      </div>
       <div style={{ flex: 1, 'min-width': 0 }}>
         <div
           style={{

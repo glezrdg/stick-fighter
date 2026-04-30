@@ -1,9 +1,9 @@
 // @vitest-environment node
-import { createRng } from '@stick/sim'
 import { describe, expect, it } from 'vitest'
 
-import { createRunState } from '../core/runState'
 import { createPlayer } from '../entities/Player'
+import { createRng } from '../rng'
+import { createRunState } from '../runState'
 
 import { WaveBuffSystem } from './WaveBuffSystem'
 

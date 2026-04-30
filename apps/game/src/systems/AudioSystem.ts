@@ -1,6 +1,5 @@
 import type { SaveCurrent } from '@stick/shared'
-
-import type { EventBus } from '../app/eventBus'
+import type { EventBus } from '@stick/sim'
 
 /**
  * Audio system. For F2.5 we synthesize SFX directly via the Web Audio API so

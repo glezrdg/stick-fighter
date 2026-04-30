@@ -1,6 +1,6 @@
 import { getWeapon } from '@stick/content'
 
-import type { RunBuffs } from '../core/runState'
+import type { RunBuffs } from '../runState'
 
 /**
  * Stateless aggregator. Combines:

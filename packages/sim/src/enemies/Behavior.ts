@@ -1,9 +1,9 @@
 import type { EnemyType } from '@stick/content'
-import type { Rng } from '@stick/sim'
 
-import type { EventBus } from '../app/eventBus'
 import type { Enemy } from '../entities/Enemy'
 import type { Player } from '../entities/Player'
+import type { EventBus } from '../eventBus'
+import type { Rng } from '../rng'
 import type { ProjectileSystem } from '../systems/ProjectileSystem'
 
 /** Context passed to a behavior on each tick. */

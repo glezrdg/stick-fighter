@@ -1,9 +1,9 @@
 import { type EnemyType, getEnemyType } from '@stick/content'
-import type { Rng } from '@stick/sim'
 
-import type { EventBus } from '../app/eventBus'
-import { ARENA } from '../core/arena'
+import { ARENA } from '../arena'
 import { type Enemy, createEnemy } from '../entities/Enemy'
+import type { EventBus } from '../eventBus'
+import type { Rng } from '../rng'
 
 /** Seconds between consecutive spawns. */
 const SPAWN_INTERVAL_SEC = 0.4

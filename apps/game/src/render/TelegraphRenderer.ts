@@ -1,6 +1,5 @@
+import type { Enemy } from '@stick/sim'
 import type Phaser from 'phaser'
-
-import type { Enemy } from '../entities/Enemy'
 
 /**
  * Floor decals warning the player about an incoming enemy strike. Drawn during

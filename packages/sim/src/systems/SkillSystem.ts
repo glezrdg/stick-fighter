@@ -1,5 +1,5 @@
-import type { EventBus } from '../app/eventBus'
-import type { RunState } from '../core/runState'
+import type { EventBus } from '../eventBus'
+import type { RunState } from '../runState'
 import * as skillRegistry from '../skills'
 import type { SkillContext } from '../skills/Skill'
 
