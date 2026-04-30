@@ -25,6 +25,14 @@ export class MainMenuScene extends BaseScene {
       }),
     )
 
+    // CO-OP path: Solid LobbyOverlay handles host/join + Colyseus connection,
+    // then emits this event when the room is ready and the run can start.
+    this.busUnsubs.push(
+      this.bus.on('ui:menu:start-netarena', () => {
+        this.scene.start('NetArena')
+      }),
+    )
+
     this.events.once('shutdown', () => this.cleanup())
     this.events.once('destroy', () => this.cleanup())
   }
