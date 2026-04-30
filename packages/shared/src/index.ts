@@ -28,3 +28,16 @@ export {
   type LeaderboardQuery,
   type LeaderboardResponse,
 } from './api/leaderboard'
+
+export {
+  AuthResponseSchema,
+  LoginRequestSchema,
+  ProfileResponseSchema,
+  RefreshRequestSchema,
+  RegisterRequestSchema,
+  type AuthResponse,
+  type LoginRequest,
+  type ProfileResponse,
+  type RefreshRequest,
+  type RegisterRequest,
+} from './api/auth'

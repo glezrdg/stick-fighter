@@ -3,7 +3,10 @@ import { type EventBus } from '@stick/sim'
 import { type Component, Show, createSignal, onCleanup } from 'solid-js'
 
 import type { SaveStore } from '../core/meta/saveStore'
+import { ApiClient } from '../platform/api'
+import { type AuthState, AuthStore } from '../platform/authStore'
 
+import { AuthOverlay } from './AuthOverlay'
 import { LeaderboardPanel } from './LeaderboardPanel'
 
 interface MainMenuOverlayProps {
@@ -25,6 +28,8 @@ export const MainMenuOverlay: Component<MainMenuOverlayProps> = (props) => {
   const [, setRev] = createSignal(0)
   const [name, setName] = createSignal(props.getSave().playerName ?? '')
   const [nameError, setNameError] = createSignal<string | null>(null)
+  const [authOpen, setAuthOpen] = createSignal(false)
+  const [auth, setAuth] = createSignal<AuthState | null>(AuthStore.get())
 
   const offEnter = props.bus.on('ui:scene:enter', ({ name: scene }) => {
     setVisible(scene === 'menu')
@@ -32,10 +37,12 @@ export const MainMenuOverlay: Component<MainMenuOverlayProps> = (props) => {
   })
   const offShop = props.bus.on('ui:shop:open', () => setRev((r) => r + 1))
   const offShopClose = props.bus.on('ui:shop:close', () => setRev((r) => r + 1))
+  const offAuth = AuthStore.subscribe((state) => setAuth(state))
   onCleanup(() => {
     offEnter()
     offShop()
     offShopClose()
+    offAuth()
   })
 
   const NAME_RE = /^[\p{L}\p{N} _-]*$/u
@@ -130,6 +137,75 @@ export const MainMenuOverlay: Component<MainMenuOverlayProps> = (props) => {
             — el filo del silencio —
           </div>
 
+          {/* Auth bar — sign in/out + current user */}
+          <div
+            style={{
+              width: '100%',
+              display: 'flex',
+              'align-items': 'center',
+              'justify-content': 'space-between',
+              gap: '10px',
+              padding: '6px 10px',
+              background: 'linear-gradient(180deg, rgba(255, 213, 74, 0.08), rgba(0, 0, 0, 0.55))',
+              border: '1.5px solid #4a3030',
+              'border-radius': '8px',
+            }}
+          >
+            <Show
+              when={auth()}
+              fallback={
+                <span
+                  style={{
+                    'font-family': "'Inter', sans-serif",
+                    'font-size': '11px',
+                    color: '#888',
+                    'letter-spacing': '1px',
+                  }}
+                >
+                  jugando como invitado
+                </span>
+              }
+            >
+              <span
+                style={{
+                  'font-family': "'Russo One', sans-serif",
+                  'font-size': '12px',
+                  color: '#ffd54a',
+                  'letter-spacing': '1.5px',
+                  'text-shadow': '1px 1px 0 #000',
+                  overflow: 'hidden',
+                  'white-space': 'nowrap',
+                  'text-overflow': 'ellipsis',
+                }}
+              >
+                ⚔ {auth()?.user.displayName}
+              </span>
+            </Show>
+            <button
+              type="button"
+              onClick={async () => {
+                if (auth()) {
+                  await ApiClient.logout()
+                } else {
+                  setAuthOpen(true)
+                }
+              }}
+              style={{
+                'font-family': "'Russo One', sans-serif",
+                'font-size': '10px',
+                'letter-spacing': '2px',
+                color: auth() ? '#ff8080' : '#ffd54a',
+                background: 'transparent',
+                border: `1.5px solid ${auth() ? '#5a2020' : '#5a4a20'}`,
+                'border-radius': '6px',
+                padding: '4px 10px',
+                cursor: 'pointer',
+              }}
+            >
+              {auth() ? 'SALIR' : 'INGRESAR'}
+            </button>
+          </div>
+
           {/* Stats row (legacy menu-stat 426-429) */}
           <div
             style={{
@@ -216,10 +292,19 @@ export const MainMenuOverlay: Component<MainMenuOverlayProps> = (props) => {
               'margin-top': '8px',
             }}
           >
-            v2 · BUILD F2.8
+            v2 · BUILD F5
           </div>
         </div>
       </div>
+      <AuthOverlay
+        open={authOpen}
+        onClose={() => setAuthOpen(false)}
+        onSuccess={(displayName) => {
+          // Sync the leaderboard name input to the authenticated profile.
+          setName(displayName)
+          persistName(displayName)
+        }}
+      />
     </Show>
   )
 }

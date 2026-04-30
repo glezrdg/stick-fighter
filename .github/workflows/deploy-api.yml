@@ -41,6 +41,7 @@ jobs:
       - name: Write apps/api/.env from secrets
         env:
           POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
           CORS_ALLOWED_ORIGINS: ${{ secrets.CORS_ALLOWED_ORIGINS }}
         run: |
           set -euo pipefail
@@ -49,12 +50,17 @@ jobs:
             echo "::error::POSTGRES_PASSWORD secret not set"
             exit 1
           fi
+          if [ -z "${JWT_SECRET:-}" ]; then
+            echo "::error::JWT_SECRET secret not set (generate with: openssl rand -base64 48)"
+            exit 1
+          fi
           cat > .env <<EOF
           PROJECT_NAME=${PROJECT_NAME}
           SUBDOMAIN=${SUBDOMAIN}
           APP_PORT=${APP_PORT}
           API_VERSION=${API_VERSION}
           POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+          JWT_SECRET=${JWT_SECRET}
           CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-http://localhost:5173}
           EOF
           chmod 600 .env

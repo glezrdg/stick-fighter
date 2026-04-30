@@ -1,19 +1,72 @@
 import { sql } from 'drizzle-orm'
-import { index, integer, jsonb, pgTable, real, text, timestamp, uuid } from 'drizzle-orm/pg-core'
+import {
+  boolean,
+  index,
+  integer,
+  jsonb,
+  pgTable,
+  real,
+  text,
+  timestamp,
+  uniqueIndex,
+  uuid,
+} from 'drizzle-orm/pg-core'
 
 /**
- * F4 schema. F5 (auth) extends `users` with email/oauth columns; today we
- * stub it as anonymous so leaderboard already works without sign-up.
+ * F5 schema. Auth extends `users` with email + bcrypt hash. Anonymous
+ * users (leaderboard submissions without sign-up) keep existing as rows
+ * with `email = NULL` and `isAnonymous = true`.
  */
 
-export const users = pgTable('users', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  /** Display handle on the leaderboard. Anonymous players get "Player_<n>". */
-  displayName: text('display_name').notNull(),
-  createdAt: timestamp('created_at', { withTimezone: true })
-    .notNull()
-    .default(sql`now()`),
-})
+export const users = pgTable(
+  'users',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    /** Display handle on the leaderboard. Anonymous players get "Player_<n>". */
+    displayName: text('display_name').notNull(),
+    /** Email (login id). Null for anonymous users. */
+    email: text('email'),
+    /** bcrypt hash. Null for anonymous users (cannot log in). */
+    passwordHash: text('password_hash'),
+    /** True if this row was created via anonymous run submission and never
+     *  upgraded to a real account. */
+    isAnonymous: boolean('is_anonymous').notNull().default(true),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .notNull()
+      .default(sql`now()`),
+  },
+  (t) => ({
+    emailIdx: uniqueIndex('users_email_idx').on(t.email),
+  }),
+)
+
+/**
+ * Refresh-token sessions. The access token (short-lived JWT) is sent on
+ * every request; the refresh token is rotated on each `/auth/refresh` call,
+ * invalidating its predecessor. Storing the bcrypt hash (not the raw token)
+ * means a DB leak doesn't grant attackers a free login.
+ */
+export const sessions = pgTable(
+  'sessions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    refreshTokenHash: text('refresh_token_hash').notNull(),
+    /** Optional UA string for "you signed in from device X" lists later. */
+    deviceInfo: text('device_info'),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .notNull()
+      .default(sql`now()`),
+    /** Set when rotated via /auth/refresh; null until then. Audit trail. */
+    rotatedAt: timestamp('rotated_at', { withTimezone: true }),
+  },
+  (t) => ({
+    userIdx: index('sessions_user_idx').on(t.userId),
+  }),
+)
 
 export const runs = pgTable(
   'runs',
@@ -52,3 +105,4 @@ export const cloudSaves = pgTable('cloud_saves', {
 export type DbUser = typeof users.$inferSelect
 export type DbRun = typeof runs.$inferSelect
 export type DbCloudSave = typeof cloudSaves.$inferSelect
+export type DbSession = typeof sessions.$inferSelect

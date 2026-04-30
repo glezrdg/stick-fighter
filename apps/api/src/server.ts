@@ -3,6 +3,8 @@ import helmet from '@fastify/helmet'
 import rateLimit from '@fastify/rate-limit'
 import Fastify from 'fastify'
 
+import { authPlugin } from './plugins/auth'
+import { authRoutes } from './routes/auth'
 import { healthRoutes } from './routes/health'
 import { leaderboardRoutes } from './routes/leaderboard'
 import { runRoutes } from './routes/runs'
@@ -44,7 +46,10 @@ async function buildServer() {
     timeWindow: '1 minute',
   })
 
+  await app.register(authPlugin)
+
   await app.register(healthRoutes)
+  await app.register(authRoutes)
   await app.register(leaderboardRoutes)
   await app.register(runRoutes)
 

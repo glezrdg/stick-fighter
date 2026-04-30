@@ -24,6 +24,7 @@ services:
       HOST: 0.0.0.0
       API_VERSION: ${API_VERSION:-0.1.0}
       DATABASE_URL: postgres://stick:${POSTGRES_PASSWORD}@api-postgres:5432/stick_fighter
+      JWT_SECRET: ${JWT_SECRET}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS}
     networks:
       - web
