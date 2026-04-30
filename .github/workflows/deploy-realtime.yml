@@ -30,6 +30,7 @@ jobs:
       - name: Sync repo to /opt/apps
         env:
           REPO_URL: https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git
+          REF_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           mkdir -p /opt/apps
@@ -39,8 +40,11 @@ jobs:
           fi
           cd "${PROJECT_NAME}"
           git remote set-url origin "${REPO_URL}"
-          git fetch origin main
-          git reset --hard origin/main
+          # Pull whatever ref the workflow was triggered from (main on push,
+          # or the dispatched branch via gh workflow run --ref). Using $GITHUB_SHA
+          # avoids hardcoding "main" so we can deploy feature branches for testing.
+          git fetch origin "${REF_SHA}"
+          git reset --hard "${REF_SHA}"
 
       - name: Write apps/realtime/.env from secrets
         env:
