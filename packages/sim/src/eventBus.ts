@@ -13,28 +13,44 @@
  *     are logged (and would surface in Sentry once wired).
  *   - For request/response patterns, use a callback in the payload — do NOT
  *     try to make the bus return values.
+ *
+ * **Sync-safe vs client-only** (matters for F5 multiplayer): events emitted by
+ * `tickArena()` and the sim systems are *sync-safe* — the server can emit them
+ * canonically and broadcast to both clients, since they describe gameplay
+ * state changes that all observers must see. Events emitted only by the
+ * client scene/UI (input, scene transitions, settings, cosmetic FX) are
+ * *client-only*: each client emits/handles them locally and the server never
+ * touches them. Each event below is tagged accordingly. Adding a new event?
+ * Add the tag.
  */
 
-/** Catalog of every event the game can emit. Add new events here. */
+/** Catalog of every event the game can emit. Add new events here.
+ *
+ * Each section is tagged sync-safe (server canonical) or client-only.
+ */
 export type GameEvents = {
-  // ---- Run lifecycle ------------------------------------------------
+  // ---- Run lifecycle ----------------------------------------- sync-safe
+  // Server emits canonically when a multiplayer room starts/ends a run.
+  // In single-player the client emits them locally with no observable diff.
   'run:start': { seed: number }
   'run:end': { wave: number; kills: number; gold: number; reason: 'death' | 'quit' }
-  /** Emitted when the backend acknowledges a run submission. `rank` is null
-   *  if the run didn't make the top 100. `status` distinguishes the offline
-   *  cases from the accepted case so the UI can show the right message. */
+  /** **client-only**: backend acknowledgment of a leaderboard submission.
+   *  Each client posts its own run, so this is local. `rank` is null
+   *  if the run didn't make the top 100. */
   'run:submitted': {
     status: 'accepted' | 'queued' | 'failed' | 'no-backend'
     rank: number | null
     runId: string | null
   }
 
-  // ---- Player ------------------------------------------------------
+  // ---- Player ------------------------------------------------ sync-safe
+  // Emitted by tickArena() / sim systems whenever the player's HP changes.
+  // In multi the server is the canonical emitter; clients receive via state diff.
   'player:hp:changed': { hp: number; maxHp: number }
   'player:hurt': { dmg: number; remainingHp: number; src: 'melee' | 'projectile' | 'aoe' }
   'player:death': Record<string, never>
 
-  // ---- Combat ------------------------------------------------------
+  // ---- Combat ------------------------------------------------ sync-safe
   'combat:hit': { attackerId: string; targetId: string; dmg: number; crit: boolean }
   'enemy:death': { enemyId: string; byPlayer: boolean }
   'combo:advance': { count: number }
@@ -58,11 +74,12 @@ export type GameEvents = {
     goldMul: number
   }
 
-  // ---- Currency ----------------------------------------------------
+  // ---- Currency ---------------------------------------------- sync-safe
   'gold:changed': { gold: number; delta: number }
   'kills:changed': { kills: number }
 
-  // ---- Waves -------------------------------------------------------
+  // ---- Waves ------------------------------------------------- sync-safe
+  // Server is the authority on spawns; in multi the client renders only.
   'wave:start': { wave: number; totalEnemies: number }
   'wave:complete': { wave: number }
   /** Snapshot emitted whenever the alive enemy count changes (death or spawn). */
@@ -74,13 +91,14 @@ export type GameEvents = {
   /** Combat resumes immediately after this. Useful for HUD to hide the cards. */
   'wave:resume': { wave: number }
 
-  // ---- Skills ------------------------------------------------------
+  // ---- Skills ------------------------------------------------ sync-safe
   'skill:cast': { skillId: string; slot: 0 | 1 }
   'skill:cooldown:changed': { slot: 0 | 1; remaining: number; total: number }
   /** Emitted on run start so the HUD can render the equipped skill icons. */
   'skills:equipped': { slot0: string | null; slot1: string | null }
 
-  // ---- UI ----------------------------------------------------------
+  // ---- UI -------------------------------------------------- client-only
+  // Each client has its own UI state; the server never emits or consumes.
   'ui:shop:open': Record<string, never>
   'ui:shop:close': Record<string, never>
   'ui:shop:purchase': { itemId: string; cost: number }
@@ -95,9 +113,11 @@ export type GameEvents = {
   /** User pressed "BACK" in GameOver — Phaser switches to MainMenu. */
   'ui:menu:return': Record<string, never>
 
-  // ---- Input (raw) -------------------------------------------------
-  // The InputController emits these. Game systems decide whether they
-  // can act on them (cooldowns, scene state, etc.).
+  // ---- Input (raw) ----------------------------------------- client-only
+  // Per-client physical input. The InputController emits these from the
+  // local browser. In multi, the cliente serializes them into PlayerInput
+  // (see loop.ts) and sends to the server; the server NEVER consumes these
+  // events directly.
   'input:attack': Record<string, never>
   'input:shoot': Record<string, never>
   'input:skill': { slot: 0 | 1 }

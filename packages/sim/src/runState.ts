@@ -70,13 +70,21 @@ export interface RunState {
   // --- Active skill timers. ---
   /** Seconds remaining of the swordTornado AOE. */
   tornadoTimer: number
-  /** Camera shake intensity remaining (seconds). */
+  /** Tornado damage tick accumulator. Grows with dt and discharges every
+   *  SWORD_TORNADO_TICK_SEC. Lives here (not as a system-private field) so
+   *  the simulation tick is fully describable by RunState alone — required
+   *  for server-authoritative replay/multiplayer. */
+  tornadoTickAcc: number
+  /** Camera shake intensity remaining (seconds). Client-only consumer. */
   cameraShake: number
   /** Slow-mo timer remaining (seconds). */
   slowMo: number
   /** Hit-stop freeze remaining (seconds). While > 0 gameplay dt is forced to 0
    *  so the impact frame "lands". Decays on real (unscaled) dt. */
   hitStop: number
+  /** Throttle window for hit-stop requests (seconds). Pairs with `hitStop` —
+   *  see systems/hitStop.ts. Lives in RunState so the sim tick is self-contained. */
+  hitStopCooldown: number
 }
 
 /** Build a fresh RunState for a new run. */
@@ -95,8 +103,10 @@ export function createRunState(opts: { seed: number; playerMaxHp: number }): Run
     seed: opts.seed,
     runBuffs: emptyRunBuffs(),
     tornadoTimer: 0,
+    tornadoTickAcc: 0,
     cameraShake: 0,
     slowMo: 0,
     hitStop: 0,
+    hitStopCooldown: 0,
   }
 }

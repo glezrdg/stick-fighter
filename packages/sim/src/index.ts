@@ -58,3 +58,13 @@ export * from './systems/BuffSystem'
 export * from './systems/ObstacleSystem'
 export * from './systems/SkillSystem'
 export * from './systems/hitStop'
+
+// ---- Loop ----
+export {
+  tickArena,
+  type PlayerInput,
+  type SimDeps,
+  type SimInputs,
+  type SimStats,
+  type TickReport,
+} from './loop'
