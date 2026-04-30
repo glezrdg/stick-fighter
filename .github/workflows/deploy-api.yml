@@ -69,7 +69,8 @@ jobs:
         run: |
           set -euo pipefail
           cd "/opt/apps/${PROJECT_NAME}/apps/api"
-          docker compose -f docker-compose.prod.yml up -d --build
+          docker compose -f docker-compose.prod.yml build --no-cache
+          docker compose -f docker-compose.prod.yml up -d
 
       - name: Prune old images
         run: docker image prune -f

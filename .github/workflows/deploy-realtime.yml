@@ -63,7 +63,12 @@ jobs:
         run: |
           set -euo pipefail
           cd "/opt/apps/${PROJECT_NAME}/apps/realtime"
-          docker compose -f docker-compose.prod.yml up -d --build
+          # `--no-cache` evita que el COPY del source reuse un layer viejo
+          # cuando los mtimes no cambian (git reset --hard re-escribe pero
+          # docker mira inode/size). Mejor recompilar desde cero — ~30s
+          # extra es aceptable para no perseguir bugs de cache stale.
+          docker compose -f docker-compose.prod.yml build --no-cache
+          docker compose -f docker-compose.prod.yml up -d
 
       - name: Prune old images
         run: docker image prune -f
