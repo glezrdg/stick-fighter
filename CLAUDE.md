@@ -212,3 +212,152 @@ El `index.html` original (4262 líneas) está en `legacy/`. **No se porta línea
 - **Probar cambios**: `pnpm dev`. Para arrancar en estado específico, modificar `defaultState` en `apps/game/src/core/meta/saveStore.ts` o setear `localStorage` desde DevTools (key `stickFighter_v4`).
 - **Agregar test**: archivos `*.test.ts` junto al código fuente, corre con `pnpm test` (vitest).
 - **Migración Drizzle**: editar `apps/api/src/db/schema.ts`, `pnpm --filter @stick/api db:generate`, commitear el SQL generado en `apps/api/src/db/migrations/`. El deploy las corre automáticamente al arrancar el container.
+
+---
+
+## Cliente: render + game feel
+
+Esta sección documenta cómo está cableada la capa visual del cliente (Phaser canvas + Solid HUD overlay), las convenciones del juice, y los archivos que un agente nuevo puede tocar sin chocar con sim/backend.
+
+### Layers de Graphics en `ArenaScene`
+
+Orden de pintado (de atrás hacia adelante):
+
+```
+arenaPropsGraphics       # piso industrial + paredes + lámparas + polvo + viñeta
+goreFloorGraphics        # blood pools + corpses
+telegraphGraphics        # cono melee / línea ranged (windup del enemigo)
+obstacleGraphics         # barriles, cajas, columnas
+gorePartsGraphics        # body parts en el suelo
+auraGraphics             # glow del aura del player (debajo del actor)
+playerGraphics           # stickman del jugador
+projectileGraphics       # arrows / orbs / spears
+particleGraphics  (depth 900)  # blood, sparks, dust, shockwaves
+deathFxGraphics   (depth 950)  # white flash + ring al matar
+```
+
+Cada layer se `clear()` y se redibuja por frame. Los enemigos tienen su propio `Graphics` por id en el Map `enemyGraphics` para que se pueda destruir cuando muere el enemigo.
+
+### Helpers puros del juice
+
+**`packages/sim/src/systems/hitStop.ts`** — pause de gameplay 50–180 ms al impactar. Pure functions:
+
+- `requestHitStop(state, duration)` aplica el freeze respetando un throttle de **80 ms** y un cap de **180 ms**. Devuelve `false` si fue rechazado por throttle (AOE pegando a 10 enemigos en el mismo tick → 1 freeze, no 10).
+- `tickHitStop(state, realDt)` decae los timers en dt real (no afectado por slow-mo).
+- ArenaScene mantiene un `hitStopState = { hitStop, cooldown }` y mirror al `runState.hitStop` para que el render lo lea consistente.
+
+Solo los **swings primarios** del jugador disparan freeze en `combat:hit` (chequeo `player.attackTimer > 0 && attackKind !== null`). AOE y skills (tornado, kiBlast, FinalFlash, GroundPound) **no** generan freeze por golpe — solo en muerte y throttled. Tornado tickeando 5×/seg es safe.
+
+### Sistemas visuales del cliente
+
+| Archivo                                      | Propósito                                                                                                                                                                      |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `apps/game/src/render/StickmanRenderer.ts`   | Stickman vectorial (player + enemigos). Sombra dinámica, ojo direccional, smears en swing, espada visible en la espalda en idle, squash en hurtFlash, drawBowAttack (3 fases). |
+| `apps/game/src/render/DeathFxRenderer.ts`    | White flash + expanding ring al kill. Lee `DeathFxSystem`.                                                                                                                     |
+| `apps/game/src/render/TelegraphRenderer.ts`  | Decals de pre-ataque enemigo. Acepta `kindOf(enemy) → 'melee' \| 'ranged'`; melee = cono frontal, ranged = línea con reticle.                                                  |
+| `apps/game/src/render/ParticleRenderer.ts`   | Pool de partículas (blood, sparks, dust, shockwaves, aura burst).                                                                                                              |
+| `apps/game/src/render/ArenaPropsRenderer.ts` | Piso industrial + ventiladores + lámparas con flicker + polvo flotante + viñeta.                                                                                               |
+| `apps/game/src/systems/DeathFxSystem.ts`     | Pool de death effects (cap 32, vida 0.28 s).                                                                                                                                   |
+| `apps/game/src/systems/AudioSystem.ts`       | Howler-style procedural por bus events.                                                                                                                                        |
+
+### Constantes ya tuneadas (no las toques sin entender por qué)
+
+| Constante               | Archivo                                            | Valor  | Razón                                                                            |
+| ----------------------- | -------------------------------------------------- | ------ | -------------------------------------------------------------------------------- |
+| `CAM_ZOOM`              | `packages/sim/src/arena.ts`                        | `1.8`  | Sweet spot entre legacy 1.6 y closer 2.0 — viewport 540×960.                     |
+| `HIT_STOP_THROTTLE_SEC` | `packages/sim/src/systems/hitStop.ts`              | `0.08` | Evita slideshow con AOE / atk-speed alto.                                        |
+| `HIT_STOP_CAP_SEC`      | idem                                               | `0.18` | Tope absoluto del freeze acumulado.                                              |
+| `BOW_AUTO_AIM_RADIUS`   | `packages/sim/src/systems/CombatSystem.ts`         | `600`  | Casi 3× el melee — el bow es respuesta a ranged.                                 |
+| `BOW_COOLDOWN_SEC`      | idem                                               | `0.4`  | Legacy parity (24 frames / 60).                                                  |
+| `ARROW_SPEED_PX_SEC`    | idem                                               | `720`  | Tipo `'arrow'`, ownerId `'player'` para diferenciar de enemy projectiles.        |
+| `MAX_FIRE_DIST`         | `packages/sim/src/enemies/behaviors/rangedKite.ts` | `260`  | Hard cap; el arquero no apunta si player está más lejos (no off-screen sniping). |
+| `WINDUP_SEC`            | idem                                               | `0.55` | Tiempo del telegraph antes del disparo. Premia esquivar.                         |
+
+### HUD reactivo (Solid + bus tipado)
+
+Patrón estándar en `apps/game/src/ui/HudRoot.tsx`:
+
+```tsx
+const [hp, setHp] = createSignal(props.initialHp)
+const off = props.bus.on('player:hp:changed', ({ hp }) => setHp(hp))
+onCleanup(off)
+```
+
+**Eventos clave del HUD**:
+
+- `player:hp:changed` — barra de HP arriba.
+- `gold:changed` — chip dorado + tienda.
+- `wave:start` / `wave:enemies:changed` — banner + contador.
+- `combo:advance` / `combo:reset` / `combo:finisher` — combo counter + finisher juice.
+- `stats:changed` — emitido por `ArenaScene.emitStats()` en run start y tras `recomputeStats()` (wave buff pick). Driver de los 7 chips legacy (HP / DMG / VEL / CRT / REG / KB / ORO).
+- `skills:equipped` / `skill:cooldown:changed` — slots Q / E.
+
+**Regla**: nunca `getElementById` en sistemas de juego. La HUD es Solid puro, recibe data por bus, no muta sim state.
+
+### `ShopOverlay` — reactive accessor pattern
+
+Solid no detecta mutaciones in-place de objetos (el save se modifica con `save.gold -= cost`). El truco es leer un signal-tick dentro del accessor para forzar rerender:
+
+```tsx
+const [rev, setRev] = createSignal(0)
+const save = () => {
+  rev()
+  return props.getSave()
+} // toca rev → reactive
+const persist = () => {
+  void props.saveStore.save(props.getSave())
+  setRev((r) => r + 1) // dispara rerender
+  props.bus.emit('gold:changed', { gold: props.getSave().gold, delta: 0 })
+}
+```
+
+Cualquier `save().gold` / `save().cosmetics.x.owned` dentro de un computed Solid se invalida cuando `persist()` corre. **Si copias un nuevo handler de compra, asegurate de llamar `persist()` al final** o la UI no se actualiza.
+
+### Previews del shop (`ShopPreview.tsx`)
+
+Cada arma y skin se dibuja en un `<canvas>` 2D real (no Phaser, no WebGL extra). Para agregar una weapon nueva:
+
+1. Añadirla a `packages/content/src/data/weapons.json`.
+2. Agregar el `shape` al schema en `packages/content/src/schemas/weapon.ts`.
+3. Agregar un `case` en `drawWeaponShape()` de `ShopPreview.tsx`.
+4. Añadir el render real (in-game) en `apps/game/src/render/WeaponRenderer.ts`.
+
+Para una skin nueva: solo `skins.json` + el `clothing` y `accessory` ya existentes funcionan; si introduces un clothing/accessory nuevo, agrégalo en `ClothingRenderer.ts` / `AccessoryRenderer.ts` + el case correspondiente en `drawClothing` / `drawAccessoryHint` de `ShopPreview.tsx`.
+
+### Dev wallet en localhost
+
+`apps/game/src/app/di.ts → applyDevWalletIfLocalhost()` se ejecuta en el bootstrap. Si `window.location.hostname` es `localhost / 127.0.0.1 / 0.0.0.0`, sube `save.gold` a 99 999 y `save.gems` a 999. **No-op en producción** (el deploy a VPS no hace match).
+
+- Para validar el "fresh save" experience en local: abrir con `http://localhost:5173/?nocheats=1`.
+- Solo aumenta valores si están por debajo del target — no resetea progreso.
+
+### Render config (Phaser)
+
+`main.tsx` usa `antialias: true, pixelArt: false, roundPixels: false` — **vector look** matcheando el legacy Canvas 2D. NO cambiar a `pixelArt: true` salvo que se decida pivotar a sprites pixel-art (F2.5 que sigue parqueado).
+
+### Cómo agregar un FX visual nuevo (recipe)
+
+1. **Si es disparado por una acción del juego** (combo finisher, kill, hit crítico): agregar evento al bus tipado en `packages/sim/src/eventBus.ts`.
+2. **Si necesita estado** (lifetime, pool): nuevo `*System` en `apps/game/src/systems/` (no en sim si es solo cosmético).
+3. **Render** en `apps/game/src/render/` con un `*Renderer` stateless que recibe la lista del system y un `Phaser.GameObjects.Graphics`.
+4. Wirear en `ArenaScene`:
+   - Crear el system y un `*Graphics` layer en `create()`.
+   - Update del system en el `update(...)` loop.
+   - Render por frame.
+   - Suscribir al evento del bus que dispara el spawn.
+   - Añadir `system?.clear()` al `cleanup()`.
+
+Ejemplo de referencia: `DeathFxSystem` + `DeathFxRenderer` + listener `enemy:death` en `ArenaScene.onEnemyDeath()`.
+
+### Zona segura para juice / UI sin chocar con backend
+
+Cuando el otro agente está en backend / multiplayer / auth, los siguientes paths son **seguros para iterar en paralelo**:
+
+- `apps/game/src/render/**`
+- `apps/game/src/scenes/ArenaScene.ts` (cuidado si está moviendo imports de `@stick/sim`)
+- `apps/game/src/scenes/{MainMenuScene,GameOverScene,BootScene,PreloadScene}.ts`
+- `apps/game/src/ui/{HudRoot,ShopOverlay,ShopPreview,WaveBuffCards,TutorialOverlay,JoystickOverlay}.tsx`
+- `apps/game/src/systems/{DeathFxSystem,AudioSystem}.ts`
+- Constantes de game-feel en `packages/sim/src/{arena,systems/hitStop,systems/CombatSystem,enemies/behaviors/rangedKite}.ts` (esos archivos están estables)
+
+Evitar mientras backend/auth estén activos: `apps/api/**`, `packages/shared/src/api/**`, `packages/shared/src/index.ts`, `apps/game/src/platform/{api,authStore,runQueue}.ts`, `apps/game/src/ui/{MainMenuOverlay,AuthOverlay}.tsx`, `apps/game/src/app/di.ts` (si están tocando bootstrap de auth).
