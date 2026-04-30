@@ -15,10 +15,9 @@ stick-fighter/
 │   ├── shared/            # tipos puros, Zod schemas (cliente ↔ servidor)
 │   ├── content/           # configs de juego (weapons/skins/skills/enemies) + Zod
 │   └── sim/               # simulación pura SIN Phaser/DOM (núcleo determinístico)
-├── infra/                 # docker-compose + Caddy del VPS (api + postgres)
 ├── legacy/
 │   └── index.html         # juego original ChatGPT, REFERENCIA funcional, no source
-└── .github/workflows/     # CI (lint + typecheck + test + build) + deploy api a VPS
+└── .github/workflows/     # CI + deploy-api.yml + deploy-game.yml (self-hosted runner del VPS)
 ```
 
 > `apps/realtime/` (Colyseus multiplayer) **NO está en main**. Está parqueado en la rama `experimental/multiplayer` — ver sección "Multiplayer" abajo.
@@ -35,27 +34,29 @@ Lo que ya funciona end-to-end:
 - F4.5: cliente cableado al backend (submit run al terminar, leaderboard pollable desde menú).
 - F5 auth básica: `POST /auth/register`, `/auth/login`, `/auth/refresh`, `/auth/me`. bcrypt + JWT (access 15m / refresh 30d). Anonymous submissions siguen funcionando.
 - Refactor `packages/sim`: lógica determinística aislada del cliente Phaser (entities, behaviors, skills, systems). Listo para ser reusada server-side cuando volvamos a multiplayer.
+- **Migración Vercel → VPS**: frontend ahora servido en `https://stick-fighter.neomac.io` desde el VPS personal (nginx:alpine + Traefik + cert wildcard `*.neomac.io` via cf-dns). Proyecto Vercel borrado.
 
 Pendiente declarado:
 
-- Migrar frontend de Vercel → VPS + Cloudflare (siguiente tarea, esperando OK).
 - Multiplayer (volver con stack distinto, ver "Multiplayer").
 - F6 mobile (Capacitor), F7 desktop (Tauri).
 
 ## Stack del backend (`apps/api`)
 
-| Pieza                               | Versión  | Rol                                           |
-| ----------------------------------- | -------- | --------------------------------------------- |
-| Fastify 4                           | TS       | HTTP server                                   |
-| Drizzle ORM 0.36                    | TS-first | schemas + migrations versionadas              |
-| Postgres 16                         | Docker   | DB principal (volume persistente en VPS)      |
-| `@fastify/jwt` 8                    |          | access + refresh tokens                       |
-| `@fastify/rate-limit` 9             |          | 60 req/min default                            |
-| `@fastify/helmet` + `@fastify/cors` |          | hardening                                     |
-| bcryptjs                            |          | password hash (cost 10)                       |
-| Caddy 2                             | host     | reverse proxy + auto-SSL Let's Encrypt en VPS |
+| Pieza                               | Versión  | Rol                                                                    |
+| ----------------------------------- | -------- | ---------------------------------------------------------------------- |
+| Fastify 4                           | TS       | HTTP server                                                            |
+| Drizzle ORM 0.36                    | TS-first | schemas + migrations versionadas                                       |
+| Postgres 16                         | Docker   | DB principal (volume persistente en VPS)                               |
+| `@fastify/jwt` 8                    |          | access + refresh tokens                                                |
+| `@fastify/rate-limit` 9             |          | 60 req/min default                                                     |
+| `@fastify/helmet` + `@fastify/cors` |          | hardening                                                              |
+| bcryptjs                            |          | password hash (cost 10)                                                |
+| Traefik v3                          | host     | reverse proxy + auto-SSL Let's Encrypt (cf-dns wildcard `*.neomac.io`) |
 
-**Deploy**: workflow `.github/workflows/deploy-api.yml` → self-hosted runner en el VPS personal → `docker compose -f infra/docker-compose.prod.yml up -d --build`. Re-deploy con `git push origin main` o `gh workflow run deploy-api.yml`.
+**Deploy**: workflow `.github/workflows/deploy-api.yml` → self-hosted runner en el VPS personal (`neomac-stick-fighter`) → `docker compose -f apps/api/docker-compose.prod.yml up -d --build`. Re-deploy con `git push origin main` (paths-filtered) o `gh workflow run deploy-api.yml`.
+
+**Frontend deploy**: análogo. `.github/workflows/deploy-game.yml` → mismo runner → `apps/game/docker-compose.prod.yml`. Container `stick-fighter` sirve `dist/` con `nginx:alpine` detrás del mismo Traefik. URL: `https://stick-fighter.neomac.io`. CORS del api permite ese origen.
 
 **Tablas (`apps/api/src/db/schema.ts`)**:
 
@@ -102,19 +103,19 @@ pnpm dev   # http://localhost:5173
 
 ## Env vars
 
-**`apps/api/`** (en `.env` local, en el VPS via `infra/.env` montado por compose):
+**`apps/api/`** (en `.env` local; en el VPS lo escribe el workflow `deploy-api.yml` desde GitHub Secrets a `apps/api/.env`):
 
-| Var                    | Requerida | Default                                   | Notas                                   |
-| ---------------------- | --------- | ----------------------------------------- | --------------------------------------- |
-| `DATABASE_URL`         | sí        | —                                         | `postgres://user:pw@host:5432/db`       |
-| `JWT_SECRET`           | sí        | —                                         | mín 32 chars, rotable                   |
-| `JWT_REFRESH_SECRET`   | sí        | —                                         | distinto de `JWT_SECRET`                |
-| `PORT`                 | no        | `3000`                                    |                                         |
-| `HOST`                 | no        | `0.0.0.0`                                 |                                         |
-| `NODE_ENV`             | no        | —                                         | `production` apaga pino-pretty          |
-| `CORS_ALLOWED_ORIGINS` | no        | `localhost:5173,stick-fighter.vercel.app` | csv. `*.vercel.app` ya pasa por sufijo. |
-| `API_VERSION`          | no        | `0.1.0`                                   | reportado en `/health`                  |
-| `DRIZZLE_LOG`          | no        | —                                         | `=1` para query logs                    |
+| Var                    | Requerida | Default                                  | Notas                                                                     |
+| ---------------------- | --------- | ---------------------------------------- | ------------------------------------------------------------------------- |
+| `DATABASE_URL`         | sí        | —                                        | `postgres://user:pw@host:5432/db`                                         |
+| `JWT_SECRET`           | sí        | —                                        | mín 32 chars, rotable                                                     |
+| `JWT_REFRESH_SECRET`   | sí        | —                                        | distinto de `JWT_SECRET`                                                  |
+| `PORT`                 | no        | `3000`                                   |                                                                           |
+| `HOST`                 | no        | `0.0.0.0`                                |                                                                           |
+| `NODE_ENV`             | no        | —                                        | `production` apaga pino-pretty                                            |
+| `CORS_ALLOWED_ORIGINS` | no        | `localhost:5173,stick-fighter.neomac.io` | csv de orígenes permitidos. Prod tiene `https://stick-fighter.neomac.io`. |
+| `API_VERSION`          | no        | `0.1.0`                                  | reportado en `/health`                                                    |
+| `DRIZZLE_LOG`          | no        | —                                        | `=1` para query logs                                                      |
 
 **`apps/game/`** (Vite, prefijo `VITE_`):
 
@@ -199,7 +200,7 @@ No volver a Colyseus self-hosted sin entender primero el bug de `Symbol.metadata
 - **HUD en Solid** (`apps/game/src/ui/`), juego en canvas Phaser. Cero `getElementById` en sistemas de juego.
 - **Audio**: Howler-style procedural por ahora (sin assets). Llega Howler real con assets cuando pase F2.6.
 - **Tiempo en sistemas**: `dt` en **segundos float**. No `tickMul` ni frames-a-60Hz.
-- **Backend env**: nunca commitear `.env`. `JWT_SECRET` y `JWT_REFRESH_SECRET` viven en `infra/.env` en el VPS, montados por compose.
+- **Backend env**: nunca commitear `.env`. `JWT_SECRET`, `POSTGRES_PASSWORD`, `CORS_ALLOWED_ORIGINS` viven como GitHub Secrets y el workflow `deploy-api.yml` los escribe a `apps/api/.env` en el VPS antes del `docker compose up`.
 
 ## Legacy
 
