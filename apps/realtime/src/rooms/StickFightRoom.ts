@@ -76,8 +76,14 @@ export class StickFightRoom extends Room<WorldState> {
   /** Mirror of `enemy.id` → schema row. Used to delete on death. */
   private readonly enemySchemaIndex = new Map<string, EnemyState>()
 
-  override onCreate(): void {
-    this.state.lobbyCode = generateLobbyCode()
+  override onCreate(options?: { lobbyCode?: string }): void {
+    // Prefer the lobbyCode the host generated client-side and passed via
+    // create options — this is what makes `filterBy(['lobbyCode'])` route
+    // friends to this exact room. Fall back to server-generated for
+    // direct .create() calls without a code (e.g. tests).
+    const fromHost = options?.lobbyCode?.toUpperCase()
+    this.state.lobbyCode =
+      fromHost && /^[A-Z2-9]{4}$/.test(fromHost) ? fromHost : generateLobbyCode()
 
     // Make the room joinable by lobbyCode via matchmaker filter.
     // Setting metadata is what `getAvailableRooms()` reads on the client.

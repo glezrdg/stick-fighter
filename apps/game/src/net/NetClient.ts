@@ -113,10 +113,18 @@ export class NetClient {
     return opts
   }
 
-  /** Host: create a new room, get a lobby code back. */
+  /** Host: create a new room. The lobby code is generated client-side and
+   *  passed as a create option so `filterBy(['lobbyCode'])` routes friends
+   *  to this exact room. The host knows the code before the create() round
+   *  trip so the UI can render it immediately. */
   async hostRoom(playerName: string): Promise<RoomSnapshot | null> {
     try {
-      const room = await this.getClient().create('stick_fight', this.joinOptions(playerName))
+      const lobbyCode = generateLobbyCode()
+      this.cachedLobbyCode = lobbyCode
+      const room = await this.getClient().create(
+        'stick_fight',
+        this.joinOptions(playerName, lobbyCode),
+      )
       return this.bindRoom(room)
     } catch (err) {
       console.warn('[net] hostRoom failed:', err)
@@ -170,6 +178,7 @@ export class NetClient {
     }
     this.room = null
     this.lastSnapshot = null
+    this.cachedLobbyCode = ''
     this.listeners.clear()
   }
 
@@ -193,7 +202,9 @@ export class NetClient {
    */
   private bindRoom(room: Colyseus.Room): RoomSnapshot {
     this.room = room
-    this.cachedLobbyCode = ''
+    // Don't reset cachedLobbyCode — hostRoom() already populated it from the
+    // generated code. joinRoom() leaves it empty until the lobby:info message
+    // arrives, which is fine since the friend already typed the code in.
     const initial = stateToSnapshot(room.state as unknown, this.cachedLobbyCode)
     this.lastSnapshot = initial
     this.notifyListeners(initial)
@@ -307,6 +318,20 @@ function stateToSnapshot(state: unknown, lobbyCodeFallback?: string): RoomSnapsh
     players,
     enemies,
   }
+}
+
+/**
+ * Generate a 4-letter lobby code (excludes I/O/0/1 so codes are unambiguous
+ * over voice/phone). Mirrors the server's fallback generator — kept in sync
+ * via the regex in StickFightRoom.onCreate.
+ */
+function generateLobbyCode(): string {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+  let out = ''
+  for (let i = 0; i < 4; i++) {
+    out += chars[Math.floor(Math.random() * chars.length)]
+  }
+  return out
 }
 
 export const netClient = new NetClient()
