@@ -1,0 +1,83 @@
+name: Deploy Realtime to VPS
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/realtime/**'
+      - 'packages/shared/**'
+      - 'packages/sim/**'
+      - 'packages/content/**'
+      - '.github/workflows/deploy-realtime.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-realtime-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, neomac-vps]
+    env:
+      PROJECT_NAME: ${{ vars.REALTIME_PROJECT_NAME || 'stick-fighter-realtime' }}
+      SUBDOMAIN: ${{ vars.REALTIME_SUBDOMAIN || 'stick-fighter-realtime' }}
+      API_VERSION: ${{ github.sha }}
+
+    steps:
+      - name: Sync repo to /opt/apps
+        env:
+          REPO_URL: https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git
+        run: |
+          set -euo pipefail
+          mkdir -p /opt/apps
+          cd /opt/apps
+          if [ ! -d "${PROJECT_NAME}" ]; then
+            git clone "${REPO_URL}" "${PROJECT_NAME}"
+          fi
+          cd "${PROJECT_NAME}"
+          git remote set-url origin "${REPO_URL}"
+          git fetch origin main
+          git reset --hard origin/main
+
+      - name: Write apps/realtime/.env from secrets
+        env:
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+        run: |
+          set -euo pipefail
+          cd "/opt/apps/${PROJECT_NAME}/apps/realtime"
+          if [ -z "${JWT_SECRET:-}" ]; then
+            echo "::error::JWT_SECRET secret not set (must match the one used by apps/api)"
+            exit 1
+          fi
+          cat > .env <<EOF
+          PROJECT_NAME=${PROJECT_NAME}
+          SUBDOMAIN=${SUBDOMAIN}
+          API_VERSION=${API_VERSION}
+          JWT_SECRET=${JWT_SECRET}
+          EOF
+          chmod 600 .env
+
+      - name: Build & start container
+        run: |
+          set -euo pipefail
+          cd "/opt/apps/${PROJECT_NAME}/apps/realtime"
+          docker compose -f docker-compose.prod.yml up -d --build
+
+      - name: Prune old images
+        run: docker image prune -f
+
+      - name: Health check
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 24); do
+            if curl -sf "https://${SUBDOMAIN}.neomac.io/health" --max-time 5 > /dev/null; then
+              echo "✅ ${SUBDOMAIN}.neomac.io is up"
+              curl -s "https://${SUBDOMAIN}.neomac.io/health"
+              exit 0
+            fi
+            echo "waiting for app… ($i/24)"
+            sleep 5
+          done
+          echo "::error::health check timed out"
+          docker logs "${PROJECT_NAME}" --tail 80
+          exit 1
