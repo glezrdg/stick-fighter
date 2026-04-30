@@ -23,6 +23,15 @@ export const RunReportSchema = z.object({
   buffs: z.record(z.string(), z.number()).optional(),
   /** Reason the run ended. */
   reason: z.enum(['death', 'quit']),
+  /** Player display name for the leaderboard. Defaults server-side to a
+   *  random `Player_<n>` if missing. Trimmed to 20 chars; alphanumerics,
+   *  spaces and `-_` only — server enforces the same rule. */
+  playerName: z
+    .string()
+    .trim()
+    .max(20)
+    .regex(/^[\p{L}\p{N} _-]+$/u, 'invalid characters in player name')
+    .optional(),
 })
 export type RunReport = z.infer<typeof RunReportSchema>
 

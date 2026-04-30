@@ -3,6 +3,7 @@ import { render } from 'solid-js/web'
 
 import { attachInput, bootstrapPreGame, type Services } from './app/di'
 import { InputController } from './core/input/InputController'
+import { RunQueue } from './platform/runQueue'
 import { ArenaScene } from './scenes/ArenaScene'
 import { BootScene } from './scenes/BootScene'
 import { GameOverScene } from './scenes/GameOverScene'
@@ -54,7 +55,11 @@ async function main(): Promise<void> {
             getSave={() => partialServices.save}
           />
           <TutorialOverlay bus={partialServices.bus} getSave={() => partialServices.save} />
-          <MainMenuOverlay bus={partialServices.bus} getSave={() => partialServices.save} />
+          <MainMenuOverlay
+            bus={partialServices.bus}
+            getSave={() => partialServices.save}
+            saveStore={partialServices.saveStore}
+          />
           <GameOverOverlay bus={partialServices.bus} getSave={() => partialServices.save} />
         </>
       ),
@@ -104,6 +109,10 @@ async function main(): Promise<void> {
 
   window.__game = game
   window.__services = services
+
+  // Best-effort: flush any run reports queued offline from previous sessions.
+  // Fire-and-forget — a failure just leaves the queue intact for next boot.
+  void RunQueue.flush()
 }
 
 main().catch((err) => {

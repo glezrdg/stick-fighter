@@ -26,9 +26,11 @@ export const runRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(422).send({ error: 'run rejected', reason })
     }
 
-    // Anonymous user — F5 replaces this with auth.
-    const anonName = `Player_${Math.floor(Math.random() * 100000)}`
-    const [user] = await db.insert(users).values({ displayName: anonName }).returning()
+    // Anonymous user — F5 replaces this with auth. Until then the client may
+    // pass a `playerName` and we'll use it as the leaderboard handle.
+    const fallbackName = `Player_${Math.floor(Math.random() * 100000)}`
+    const displayName = report.playerName?.trim() || fallbackName
+    const [user] = await db.insert(users).values({ displayName }).returning()
     if (!user) {
       return reply.code(500).send({ error: 'failed to create anon user' })
     }

@@ -2,10 +2,14 @@ import type { SaveCurrent } from '@stick/shared'
 import { type Component, Show, createSignal, onCleanup } from 'solid-js'
 
 import { type EventBus } from '../app/eventBus'
+import type { SaveStore } from '../core/meta/saveStore'
+
+import { LeaderboardPanel } from './LeaderboardPanel'
 
 interface MainMenuOverlayProps {
   bus: EventBus
   getSave: () => SaveCurrent
+  saveStore: SaveStore
 }
 
 /**
@@ -19,8 +23,13 @@ interface MainMenuOverlayProps {
 export const MainMenuOverlay: Component<MainMenuOverlayProps> = (props) => {
   const [visible, setVisible] = createSignal(false)
   const [, setRev] = createSignal(0)
+  const [name, setName] = createSignal(props.getSave().playerName ?? '')
+  const [nameError, setNameError] = createSignal<string | null>(null)
 
-  const offEnter = props.bus.on('ui:scene:enter', ({ name }) => setVisible(name === 'menu'))
+  const offEnter = props.bus.on('ui:scene:enter', ({ name: scene }) => {
+    setVisible(scene === 'menu')
+    if (scene === 'menu') setName(props.getSave().playerName ?? '')
+  })
   const offShop = props.bus.on('ui:shop:open', () => setRev((r) => r + 1))
   const offShopClose = props.bus.on('ui:shop:close', () => setRev((r) => r + 1))
   onCleanup(() => {
@@ -29,7 +38,29 @@ export const MainMenuOverlay: Component<MainMenuOverlayProps> = (props) => {
     offShopClose()
   })
 
+  const NAME_RE = /^[\p{L}\p{N} _-]*$/u
+
+  const persistName = (raw: string): boolean => {
+    const trimmed = raw.trim().slice(0, 20)
+    if (trimmed && !NAME_RE.test(trimmed)) {
+      setNameError('letras, números, espacios y _-')
+      return false
+    }
+    setNameError(null)
+    const save = props.getSave()
+    const next = trimmed ? trimmed : undefined
+    if (save.playerName === next) return true
+    if (next === undefined) {
+      delete save.playerName
+    } else {
+      save.playerName = next
+    }
+    void props.saveStore.save(save)
+    return true
+  }
+
   const startRun = () => {
+    if (!persistName(name())) return
     setVisible(false)
     props.bus.emit('ui:menu:start-run', {})
   }
@@ -46,6 +77,7 @@ export const MainMenuOverlay: Component<MainMenuOverlayProps> = (props) => {
           padding: '20px',
           'pointer-events': 'auto',
           'z-index': 30,
+          'overflow-y': 'auto',
           background:
             'radial-gradient(ellipse at 50% 30%, rgba(255, 42, 42, 0.18) 0%, transparent 60%), linear-gradient(180deg, #1a1f24 0%, #0e1317 100%)',
         }}
@@ -54,6 +86,7 @@ export const MainMenuOverlay: Component<MainMenuOverlayProps> = (props) => {
           style={{
             width: '100%',
             'max-width': '420px',
+            margin: 'auto',
             background:
               'radial-gradient(ellipse at 50% 25%, rgba(255, 42, 42, 0.20) 0%, transparent 65%), radial-gradient(ellipse at 50% 80%, rgba(255, 213, 74, 0.08) 0%, transparent 60%), linear-gradient(180deg, #1a1f24 0%, #0e1317 100%)',
             border: '3px solid #ff2a2a',
@@ -111,6 +144,49 @@ export const MainMenuOverlay: Component<MainMenuOverlayProps> = (props) => {
             <MenuStat icon="🏆" label={`OLA ${props.getSave().bestWave}`} />
           </div>
 
+          {/* Player name input — persisted to save.playerName for the leaderboard */}
+          <label
+            style={{
+              display: 'flex',
+              'flex-direction': 'column',
+              gap: '4px',
+              width: '100%',
+              'font-family': "'Russo One', sans-serif",
+              'font-size': '11px',
+              'letter-spacing': '2px',
+              color: '#c0a0a0',
+            }}
+          >
+            NOMBRE DE GUERRERO
+            <input
+              type="text"
+              value={name()}
+              maxLength={20}
+              placeholder="Anónimo"
+              onInput={(e) => {
+                const v = e.currentTarget.value
+                setName(v)
+                persistName(v)
+              }}
+              onBlur={(e) => persistName(e.currentTarget.value)}
+              style={{
+                'font-family': "'Russo One', sans-serif",
+                'font-size': '15px',
+                'letter-spacing': '2px',
+                color: '#fff',
+                background: 'rgba(0, 0, 0, 0.55)',
+                border: `2px solid ${nameError() ? '#ff5050' : '#5a2020'}`,
+                'border-radius': '8px',
+                padding: '10px 12px',
+                outline: 'none',
+                'text-shadow': '1px 1px 0 #000',
+              }}
+            />
+            <Show when={nameError()}>
+              <span style={{ color: '#ff8080', 'font-size': '10px' }}>{nameError()}</span>
+            </Show>
+          </label>
+
           {/* Action buttons */}
           <div
             style={{
@@ -127,6 +203,9 @@ export const MainMenuOverlay: Component<MainMenuOverlayProps> = (props) => {
               onClick={() => props.bus.emit('ui:shop:open', {})}
             />
           </div>
+
+          {/* Leaderboard top-10 (offline-tolerant) */}
+          <LeaderboardPanel top={10} />
 
           <div
             style={{

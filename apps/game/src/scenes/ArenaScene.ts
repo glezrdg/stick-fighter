@@ -19,6 +19,8 @@ import type { Enemy } from '../entities/Enemy'
 import type { Obstacle } from '../entities/Obstacle'
 import { type Player, createPlayer } from '../entities/Player'
 import type { Projectile } from '../entities/Projectile'
+import { ApiClient } from '../platform/api'
+import { RunQueue } from '../platform/runQueue'
 import { type ArenaProps, ArenaPropsRenderer } from '../render/ArenaPropsRenderer'
 import { GoreRenderer } from '../render/GoreRenderer'
 import { ObstacleRenderer } from '../render/ObstacleRenderer'
@@ -757,24 +759,40 @@ export class ArenaScene extends BaseScene {
     if (this.runState.wave > save.bestWave) save.bestWave = this.runState.wave
     await this.services.saveStore.save(save)
 
-    // Submit to leaderboard (no-op if API not configured / network down).
-    if (this.runState.wave >= 1) {
-      const { ApiClient } = await import('../platform/api')
-      const buffsRecord: Record<string, number> = { ...this.runState.runBuffs }
-      const result = await ApiClient.submitRun({
-        seed: this.runState.seed,
-        wave: this.runState.wave,
-        kills: this.runState.kills,
-        gold: this.runState.gold,
-        durationSec: this.runState.elapsed,
-        weapon: this.loadout.weaponId,
-        buffs: buffsRecord,
-        reason,
-      })
-      if (result?.rank) {
-        console.info(`[arena] leaderboard rank #${result.rank}`)
-      }
+    // Submit to leaderboard (or queue offline if backend isn't reachable).
+    if (this.runState.wave < 1) return
+
+    const buffsRecord: Record<string, number> = { ...this.runState.runBuffs }
+    const report = {
+      seed: this.runState.seed,
+      wave: this.runState.wave,
+      kills: this.runState.kills,
+      gold: this.runState.gold,
+      durationSec: this.runState.elapsed,
+      weapon: this.loadout.weaponId,
+      buffs: buffsRecord,
+      reason,
+      ...(save.playerName ? { playerName: save.playerName } : {}),
     }
+
+    if (!ApiClient.isConfigured()) {
+      this.bus.emit('run:submitted', { status: 'no-backend', rank: null, runId: null })
+      return
+    }
+
+    const result = await ApiClient.submitRun(report)
+    if (!result) {
+      RunQueue.enqueue(report)
+      this.bus.emit('run:submitted', { status: 'queued', rank: null, runId: null })
+      return
+    }
+    this.bus.emit('run:submitted', {
+      status: 'accepted',
+      rank: result.rank,
+      runId: result.runId,
+    })
+    // Opportunistically flush any backlog now that we know the API is up.
+    void RunQueue.flush()
   }
 
   private cleanup(): void {

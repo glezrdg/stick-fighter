@@ -33,6 +33,9 @@ export const SaveV1 = z.object({
   gems: z.number().int().nonnegative(),
   bestWave: z.number().int().nonnegative(),
   totalKills: z.number().int().nonnegative(),
+  /** Display name for the leaderboard. Optional — kept absent for new players
+   *  until they type one in the MainMenu. */
+  playerName: z.string().max(20).optional(),
   skills: z.object({
     owned: z.array(z.string()),
     /** Up to 2 equipped active skills (slots 0 and 1). */

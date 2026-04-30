@@ -20,6 +20,14 @@ export type GameEvents = {
   // ---- Run lifecycle ------------------------------------------------
   'run:start': { seed: number }
   'run:end': { wave: number; kills: number; gold: number; reason: 'death' | 'quit' }
+  /** Emitted when the backend acknowledges a run submission. `rank` is null
+   *  if the run didn't make the top 100. `status` distinguishes the offline
+   *  cases from the accepted case so the UI can show the right message. */
+  'run:submitted': {
+    status: 'accepted' | 'queued' | 'failed' | 'no-backend'
+    rank: number | null
+    runId: string | null
+  }
 
   // ---- Player ------------------------------------------------------
   'player:hp:changed': { hp: number; maxHp: number }
