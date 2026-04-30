@@ -1,70 +1,110 @@
-import { ArraySchema, MapSchema, Schema, type } from '@colyseus/schema'
+import { ArraySchema, MapSchema, Schema, defineTypes } from '@colyseus/schema'
 
 /**
  * Colyseus state schema — the source of truth that the server authors and
- * the client mirrors via diffs. Only fields that the client needs to render
- * or react to live here. Per-frame intermediate state (e.g. attackStepTimer)
- * stays in the sim's RunState on the server, not in the schema.
+ * the client mirrors via diffs.
  *
- * Skeleton for F5 phase 3a — populated with real fields as gameplay lands.
+ * We use the imperative `defineTypes` API rather than decorators because
+ * @colyseus/schema 3.x's decorator runtime depends on stage-3 decorator
+ * metadata (Symbol.metadata) which conflicts with TypeScript's legacy
+ * `experimentalDecorators` emit. defineTypes registers the field types
+ * directly on the class without relying on decorator metadata.
  */
 
-/** A connected player + their authoritative pose. */
 export class PlayerState extends Schema {
-  @type('string') sessionId = ''
-  @type('string') displayName = ''
-  /** Slot index in the lobby (0 or 1). Determines spawn position + skin. */
-  @type('uint8') slot = 0
-  /** True once the client has confirmed it loaded the run + is ready. */
-  @type('boolean') ready = false
-  /** Authoritative position + velocity (sim coords). */
-  @type('float32') x = 0
-  @type('float32') y = 0
-  @type('float32') vx = 0
-  @type('float32') vy = 0
-  @type('float32') facingX = 1
-  @type('float32') facingY = 0
-  @type('float32') walkPhase = 0
-  /** Combat state — for renderer-side attack animation. */
-  @type('string') attackKind = ''
-  @type('float32') attackTimer = 0
-  @type('float32') attackDuration = 0
-  @type('float32') attackDirX = 1
-  @type('float32') attackDirY = 0
-  @type('uint16') hp = 100
-  @type('uint16') maxHp = 100
+  sessionId = ''
+  displayName = ''
+  slot = 0
+  ready = false
+  x = 0
+  y = 0
+  vx = 0
+  vy = 0
+  facingX = 1
+  facingY = 0
+  walkPhase = 0
+  attackKind = ''
+  attackTimer = 0
+  attackDuration = 0
+  attackDirX = 1
+  attackDirY = 0
+  hp = 100
+  maxHp = 100
 }
 
-/** A single enemy as the server sees it. Trimmed to what the client renders. */
+defineTypes(PlayerState, {
+  sessionId: 'string',
+  displayName: 'string',
+  slot: 'uint8',
+  ready: 'boolean',
+  x: 'float32',
+  y: 'float32',
+  vx: 'float32',
+  vy: 'float32',
+  facingX: 'float32',
+  facingY: 'float32',
+  walkPhase: 'float32',
+  attackKind: 'string',
+  attackTimer: 'float32',
+  attackDuration: 'float32',
+  attackDirX: 'float32',
+  attackDirY: 'float32',
+  hp: 'uint16',
+  maxHp: 'uint16',
+})
+
 export class EnemyState extends Schema {
-  @type('string') id = ''
-  @type('string') typeId = ''
-  @type('float32') x = 0
-  @type('float32') y = 0
-  @type('float32') vx = 0
-  @type('float32') vy = 0
-  @type('float32') facingX = 1
-  @type('float32') facingY = 0
-  @type('float32') walkPhase = 0
-  @type('float32') attackTimer = 0
-  @type('float32') attackDuration = 0
-  @type('uint16') hp = 0
-  @type('uint16') maxHp = 0
-  @type('float32') hurtFlash = 0
+  id = ''
+  typeId = ''
+  x = 0
+  y = 0
+  vx = 0
+  vy = 0
+  facingX = 1
+  facingY = 0
+  walkPhase = 0
+  attackTimer = 0
+  attackDuration = 0
+  hp = 0
+  maxHp = 0
+  hurtFlash = 0
 }
+
+defineTypes(EnemyState, {
+  id: 'string',
+  typeId: 'string',
+  x: 'float32',
+  y: 'float32',
+  vx: 'float32',
+  vy: 'float32',
+  facingX: 'float32',
+  facingY: 'float32',
+  walkPhase: 'float32',
+  attackTimer: 'float32',
+  attackDuration: 'float32',
+  hp: 'uint16',
+  maxHp: 'uint16',
+  hurtFlash: 'float32',
+})
 
 export class WorldState extends Schema {
-  @type({ map: PlayerState }) players = new MapSchema<PlayerState>()
-  @type([EnemyState]) enemies = new ArraySchema<EnemyState>()
-
-  /** Lobby code (4 letters) shown in the UI so a friend can join. */
-  @type('string') lobbyCode = ''
-  /** 'lobby' until both slots are ready, then 'playing', then 'gameover'. */
-  @type('string') phase: 'lobby' | 'playing' | 'gameover' = 'lobby'
-  /** Per-run seed broadcast to clients on phase transition so client-side
-   *  prediction can match server RNG. */
-  @type('uint32') seed = 0
-  @type('uint16') wave = 0
-  @type('uint16') waveAlive = 0
-  @type('uint16') waveTotal = 0
+  players = new MapSchema<PlayerState>()
+  enemies = new ArraySchema<EnemyState>()
+  lobbyCode = ''
+  phase: 'lobby' | 'playing' | 'gameover' = 'lobby'
+  seed = 0
+  wave = 0
+  waveAlive = 0
+  waveTotal = 0
 }
+
+defineTypes(WorldState, {
+  players: { map: PlayerState },
+  enemies: [EnemyState],
+  lobbyCode: 'string',
+  phase: 'string',
+  seed: 'uint32',
+  wave: 'uint16',
+  waveAlive: 'uint16',
+  waveTotal: 'uint16',
+})
