@@ -189,16 +189,18 @@ export class NetClient {
    */
   private bindRoom(room: Colyseus.Room): RoomSnapshot {
     this.room = room
-    const meta = (room.metadata ?? {}) as { lobbyCode?: string }
-    const initial = stateToSnapshot(room.state as unknown, meta.lobbyCode)
+    // `Room.metadata` is not in the typed API of colyseus.js but exists at
+    // runtime (set from the matchmake response). It's the canonical source
+    // of `lobbyCode` since it's available before the schema has synced.
+    const readLobbyCode = (): string | undefined =>
+      (room as unknown as { metadata?: { lobbyCode?: string } }).metadata?.lobbyCode
+    const initial = stateToSnapshot(room.state as unknown, readLobbyCode())
     this.lastSnapshot = initial
     // Fire listeners with the initial snapshot too — `onStateChange` may
-    // not replay the first state if it landed before we registered. Without
-    // this the LobbyOverlay never sees any update.
+    // not replay the first state if it landed before we registered.
     this.notifyListeners(initial)
     room.onStateChange((state: unknown) => {
-      const m = (room.metadata ?? {}) as { lobbyCode?: string }
-      this.lastSnapshot = stateToSnapshot(state, m.lobbyCode)
+      this.lastSnapshot = stateToSnapshot(state, readLobbyCode())
       this.notifyListeners(this.lastSnapshot)
     })
     room.onLeave(() => {
