@@ -7,12 +7,23 @@ import type { Player } from '../entities/Player'
 export const AUTO_AIM_RADIUS = 220
 /** If the player doesn't attack again within this window, the combo step resets. */
 export const COMBO_RESET_SEC = 1.5
-/** Forward velocity boost applied at the start of each attack (px/frame at 60Hz). */
-const LUNGE_PX_PER_FRAME = 2.5
+/** Forward velocity boost applied at the start of each attack (px/frame at 60Hz).
+ *  Per-kind, mirrors legacy line 1735 (kick=4.5, chop=3, spin=2, default=2.5). */
+const LUNGE_BY_KIND: Record<string, number> = {
+  kick: 4.5,
+  chop: 3,
+  spin: 2,
+}
+const LUNGE_DEFAULT = 2.5
 /** Cone half-angle for melee hits: dot(attackDir, toEnemy) > this connects. */
 export const HIT_CONE_DOT_THRESHOLD = 0.3
+/** Looser cone for chop (legacy line 1740: 0.45 vs default 0.3). */
+const HIT_CONE_DOT_CHOP = 0.45
 /** Hurt flash duration applied to enemies on hit (seconds). */
 const ENEMY_HURT_FLASH_SEC = 0.12
+/** Base crit chance and multiplier (legacy lines 1767-1781). */
+const BASE_CRIT_CHANCE = 0.05
+const CRIT_DMG_MUL = 2.0
 
 /** Minimum projection of an enemy used by auto-aim and hit detection. */
 export interface EnemyTarget {
@@ -46,6 +57,10 @@ export interface CombatSystemOptions {
   /** Returns the current effective damage multiplier from BuffSystem.
    *  Defaults to 1 if not provided. */
   getDmgMul?: () => number
+  /** Crit chance from BuffSystem (BASE + ojoAsesino buff). Defaults to BASE_CRIT_CHANCE. */
+  getCritChance?: () => number
+  /** Returns 0..1 random for crit roll. Tests inject deterministic values. */
+  rngNext?: () => number
   /** Invoked when a swing is fired so callers can resolve hits against
    *  non-enemy targets (e.g. destructible obstacles). */
   onSwing?: (ctx: SwingResolveContext) => void
@@ -63,6 +78,8 @@ export class CombatSystem {
   private readonly attackPatterns: AttackPatterns
   private readonly getEnemies: (() => Iterable<EnemyTarget>) | undefined
   private readonly getDmgMul: () => number
+  private readonly getCritChance: () => number
+  private readonly rngNext: () => number
   private readonly onSwing: ((ctx: SwingResolveContext) => void) | undefined
 
   constructor(opts: CombatSystemOptions) {
@@ -70,6 +87,8 @@ export class CombatSystem {
     this.attackPatterns = opts.attackPatterns
     this.getEnemies = opts.getEnemies
     this.getDmgMul = opts.getDmgMul ?? (() => 1)
+    this.getCritChance = opts.getCritChance ?? (() => BASE_CRIT_CHANCE)
+    this.rngNext = opts.rngNext ?? Math.random
     this.onSwing = opts.onSwing
   }
 
@@ -114,9 +133,10 @@ export class CombatSystem {
     player.facingX = aim.x
     player.facingY = aim.y
 
-    // Lunge in the attack direction.
-    player.vx += aim.x * LUNGE_PX_PER_FRAME
-    player.vy += aim.y * LUNGE_PX_PER_FRAME
+    // Lunge in the attack direction (per-kind: kick=4.5, chop=3, spin=2, default=2.5).
+    const lunge = LUNGE_BY_KIND[pattern.kind] ?? LUNGE_DEFAULT
+    player.vx += aim.x * lunge
+    player.vy += aim.y * lunge
 
     player.attackStep = (player.attackStep + 1) % this.attackPatterns.length
     player.attackStepTimer = COMBO_RESET_SEC
@@ -137,7 +157,9 @@ export class CombatSystem {
     const enemies = this.getEnemies?.()
     if (!enemies) return
 
-    const dmg = this.getDmgMul() * pattern.dmgMul
+    const baseDmg = this.getDmgMul() * pattern.dmgMul
+    const critChance = this.getCritChance()
+    const arcDot = pattern.kind === 'chop' ? HIT_CONE_DOT_CHOP : HIT_CONE_DOT_THRESHOLD
     for (const e of enemies) {
       if (e.hp <= 0) continue
       const dx = e.x - player.x
@@ -148,8 +170,10 @@ export class CombatSystem {
       if (!pattern.all) {
         const inv = dist > 0 ? 1 / dist : 0
         const dot = dx * inv * aim.x + dy * inv * aim.y
-        if (dot < HIT_CONE_DOT_THRESHOLD) continue
+        if (dot < arcDot) continue
       }
+      const crit = this.rngNext() < critChance
+      const dmg = crit ? baseDmg * CRIT_DMG_MUL : baseDmg
       const wasDead = e.hp <= 0
       e.hp -= dmg
       e.hurtFlash = ENEMY_HURT_FLASH_SEC
@@ -157,7 +181,7 @@ export class CombatSystem {
         attackerId: 'player',
         targetId: e.id,
         dmg,
-        crit: false,
+        crit,
       })
       if (!wasDead && e.hp <= 0) {
         this.bus.emit('enemy:death', { enemyId: e.id, byPlayer: true })

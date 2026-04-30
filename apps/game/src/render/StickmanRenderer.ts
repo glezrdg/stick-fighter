@@ -1,6 +1,8 @@
-import type { AttackKind, WeaponShape } from '@stick/content'
+import type { AccessoryKind, AttackKind, ClothingKind, WeaponShape } from '@stick/content'
 import type Phaser from 'phaser'
 
+import { AccessoryRenderer } from './AccessoryRenderer'
+import { ClothingRenderer } from './ClothingRenderer'
 import { WeaponRenderer } from './WeaponRenderer'
 
 /** Geometry constants extracted from the legacy drawStickman (see plan agent report). */
@@ -106,6 +108,12 @@ export interface StickmanRenderState {
   color?: number
   /** Optional equipped weapon — drawn in the swinging hand. */
   weapon?: { shape: WeaponShape; blade: number }
+  /** Torso clothing kind. Drawn over the body line. */
+  clothing?: ClothingKind
+  /** Override clothing color (in 0xRRGGBB). */
+  clothingColor?: number
+  /** Head accessory / held overlay (horns, headband, helm, spear, etc). */
+  accessory?: AccessoryKind
 }
 
 const DEFAULT_COLOR = 0x000000
@@ -232,9 +240,34 @@ export class StickmanRenderer {
     g.lineTo(0, shoulderY)
     g.strokePath()
 
+    // ---- CLOTHING (over torso, before head) ----
+    if (p.clothing && p.clothing !== 'tunic' && p.hurtFlash <= 0) {
+      ClothingRenderer.draw(g, p.clothing, {
+        scale,
+        color,
+        ...(p.clothingColor !== undefined ? { tint: p.clothingColor } : {}),
+      })
+    } else if (p.clothing === 'tunic' && p.hurtFlash <= 0) {
+      ClothingRenderer.draw(g, 'tunic', {
+        scale,
+        color,
+        ...(p.clothingColor !== undefined ? { tint: p.clothingColor } : {}),
+      })
+    }
+
     // ---- HEAD ----
     g.fillStyle(color, 1)
     g.fillCircle(0, headY, G.HEAD_RADIUS * scale)
+
+    // ---- ACCESSORY (drawn on top of head) ----
+    if (p.accessory && p.accessory !== 'none' && p.hurtFlash <= 0) {
+      AccessoryRenderer.draw(g, p.accessory, {
+        scale,
+        headY,
+        color,
+        facingX: p.facingX,
+      })
+    }
 
     // ---- ARMS ----
     this.drawArms(g, p, color, lineWidth, scale, shoulderY)

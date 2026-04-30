@@ -1,4 +1,13 @@
-import { type WeaponShape, attackPatterns, getEnemyType, getSkin, getWeapon } from '@stick/content'
+import {
+  type AccessoryKind,
+  type ClothingKind,
+  type WeaponShape,
+  attackPatterns,
+  getAura,
+  getEnemyType,
+  getSkin,
+  getWeapon,
+} from '@stick/content'
 import { timeSeed } from '@stick/sim'
 
 import { dtFromPhaser } from '../app/time'
@@ -10,8 +19,10 @@ import type { Enemy } from '../entities/Enemy'
 import type { Obstacle } from '../entities/Obstacle'
 import { type Player, createPlayer } from '../entities/Player'
 import type { Projectile } from '../entities/Projectile'
+import { type ArenaProps, ArenaPropsRenderer } from '../render/ArenaPropsRenderer'
 import { GoreRenderer } from '../render/GoreRenderer'
 import { ObstacleRenderer } from '../render/ObstacleRenderer'
+import { ParticleRenderer } from '../render/ParticleRenderer'
 import { StickmanRenderer } from '../render/StickmanRenderer'
 // Side-effect: register every skill.
 import '../skills'
@@ -27,6 +38,7 @@ import { EnemySystem } from '../systems/EnemySystem'
 import { GoreSystem } from '../systems/GoreSystem'
 import { updateMovement } from '../systems/MovementSystem'
 import { ObstacleSystem } from '../systems/ObstacleSystem'
+import { ParticleSystem } from '../systems/ParticleSystem'
 import { ProjectileSystem } from '../systems/ProjectileSystem'
 import { SkillSystem } from '../systems/SkillSystem'
 import { WaveBuffSystem } from '../systems/WaveBuffSystem'
@@ -59,7 +71,11 @@ export class ArenaScene extends BaseScene {
   private projectiles!: ProjectileSystem
   private gore!: GoreSystem
   private obstacleSys!: ObstacleSystem
+  private particles!: ParticleSystem
   private stickman!: StickmanRenderer
+  private dustAcc = 0
+  private arenaProps!: ArenaProps
+  private arenaPropsGraphics!: Phaser.GameObjects.Graphics
 
   private playerGraphics!: Phaser.GameObjects.Graphics
   private enemyGraphics = new Map<string, Phaser.GameObjects.Graphics>()
@@ -67,6 +83,7 @@ export class ArenaScene extends BaseScene {
   private goreFloorGraphics!: Phaser.GameObjects.Graphics
   private gorePartsGraphics!: Phaser.GameObjects.Graphics
   private obstacleGraphics!: Phaser.GameObjects.Graphics
+  private particleGraphics!: Phaser.GameObjects.Graphics
 
   private tornadoTickAcc = 0
   private busUnsubs: Array<() => void> = []
@@ -76,6 +93,10 @@ export class ArenaScene extends BaseScene {
   private currentWaveTotal = 0
   private playerSkinColor = 0x000000
   private playerWeaponShape: { shape: WeaponShape; blade: number } | undefined
+  private auraColor = 0xffd54a
+  private playerClothing: ClothingKind = 'tunic'
+  private playerClothingColor: number | undefined
+  private playerAccessory: AccessoryKind = 'none'
 
   constructor(services: ConstructorParameters<typeof BaseScene>[1]) {
     super(ArenaScene.KEY, services)
@@ -112,6 +133,8 @@ export class ArenaScene extends BaseScene {
       attackPatterns,
       getEnemies: () => this.waves.getEnemies(),
       getDmgMul: () => this.stats.dmgMul,
+      getCritChance: () => this.stats.critChance,
+      rngNext: () => this.rng.next(),
       onSwing: (ctx) =>
         this.obstacleSys.applyMeleeSwing({
           ...ctx,
@@ -126,6 +149,7 @@ export class ArenaScene extends BaseScene {
     })
     this.skillSystem = new SkillSystem({ bus: this.bus })
     this.gore = new GoreSystem({ rng: this.rng })
+    this.particles = new ParticleSystem({ rng: this.rng })
     this.stickman = new StickmanRenderer()
 
     // ---- Arena visuals ----
@@ -137,12 +161,19 @@ export class ArenaScene extends BaseScene {
     for (let x = 0; x <= ARENA.width; x += 60) grid.lineBetween(x, 0, x, ARENA.height)
     for (let y = 0; y <= ARENA.height; y += 60) grid.lineBetween(0, y, ARENA.width, y)
 
+    // Arena props (fans, lamps, pipes) are below everything — generated once.
+    this.arenaProps = ArenaPropsRenderer.generate({ width: ARENA.width, height: ARENA.height })
+    this.arenaPropsGraphics = this.add.graphics()
+
     // Floor layer (blood pools, corpses) goes BELOW the player and parts.
     this.goreFloorGraphics = this.add.graphics()
     this.obstacleGraphics = this.add.graphics()
     this.gorePartsGraphics = this.add.graphics()
     this.playerGraphics = this.add.graphics()
     this.projectileGraphics = this.add.graphics()
+    // Particles render on top of everything except popups.
+    this.particleGraphics = this.add.graphics()
+    this.particleGraphics.setDepth(900)
 
     // ---- Camera ----
     this.cameras.main.setBounds(0, 0, ARENA.width, ARENA.height)
@@ -160,6 +191,13 @@ export class ArenaScene extends BaseScene {
       }),
       this.bus.on('enemy:death', ({ enemyId, byPlayer }) => this.onEnemyDeath(enemyId, byPlayer)),
       this.bus.on('combat:hit', ({ targetId, dmg, crit }) => this.onCombatHit(targetId, dmg, crit)),
+      this.bus.on('skill:cast', ({ skillId }) => this.onSkillCast(skillId)),
+      this.bus.on('obstacle:explode', ({ x, y }) => {
+        this.particles.spawnShockwave(x, y, 0xff8000, 24)
+        this.particles.spawnAuraBurst(x, y, 0xffe080, 16)
+        this.runState.cameraShake = 0.5
+        this.runState.slowMo = 0.16
+      }),
       this.bus.on('wave:start', ({ wave, totalEnemies }) => {
         this.runState.wave = wave
         this.currentWaveTotal = totalEnemies
@@ -195,16 +233,19 @@ export class ArenaScene extends BaseScene {
   }
 
   override update(_time: number, deltaMs: number): void {
-    const dt = dtFromPhaser(deltaMs)
+    const realDt = dtFromPhaser(deltaMs)
     if (this.runState.paused) return
-    this.runState.elapsed += dt
+    this.runState.elapsed += realDt
 
-    // Decay run-state timers.
+    // Decay slow-mo on REAL dt; scale gameplay dt while active (legacy 1318: 0.4×).
+    if (this.runState.slowMo > 0) {
+      this.runState.slowMo = Math.max(0, this.runState.slowMo - realDt)
+    }
+    const dt = this.runState.slowMo > 0 ? realDt * 0.4 : realDt
+
+    // Decay other run-state timers on the (possibly slowed) dt.
     if (this.runState.cameraShake > 0) {
       this.runState.cameraShake = Math.max(0, this.runState.cameraShake - dt)
-    }
-    if (this.runState.slowMo > 0) {
-      this.runState.slowMo = Math.max(0, this.runState.slowMo - dt)
     }
     if (this.runState.tornadoTimer > 0) {
       this.runState.tornadoTimer = Math.max(0, this.runState.tornadoTimer - dt)
@@ -238,6 +279,20 @@ export class ArenaScene extends BaseScene {
     this.waves.reapDead()
     this.gore.update(dt)
     this.obstacleSys.update(dt)
+    this.particles.update(dt)
+    ArenaPropsRenderer.update(this.arenaProps, dt, (lo, hi) => this.rng.float(lo, hi))
+
+    // Footstep dust while running.
+    const speed = Math.hypot(this.player.vx, this.player.vy)
+    if (speed > 1.5 && this.player.dashTimer <= 0) {
+      this.dustAcc += dt
+      if (this.dustAcc > 0.12) {
+        this.dustAcc = 0
+        this.particles.spawnDust(this.player.x + this.rng.float(-6, 6), this.player.y + 26)
+      }
+    } else {
+      this.dustAcc = 0
+    }
 
     // Emit alive-enemies change for HUD wave progress.
     const alive = this.waves.getEnemies().length
@@ -252,12 +307,21 @@ export class ArenaScene extends BaseScene {
       this.obstacleSys.applyCollision(e, 16 * (getEnemyType(e.typeId).scale || 1))
 
     // Render.
+    this.arenaPropsGraphics.clear()
+    ArenaPropsRenderer.drawFloor(this.arenaPropsGraphics, this.arenaProps)
     this.renderGore()
     this.renderObstacles(this.obstacleSys.getAll())
+    this.particleGraphics.clear()
+    ParticleRenderer.draw(this.particleGraphics, this.particles.getAll())
     this.playerGraphics.setPosition(this.player.x, this.player.y)
     this.stickman.draw(this.playerGraphics, {
       ...this.player,
       color: this.playerSkinColor,
+      clothing: this.playerClothing,
+      accessory: this.playerAccessory,
+      ...(this.playerClothingColor !== undefined
+        ? { clothingColor: this.playerClothingColor }
+        : {}),
       ...(this.playerWeaponShape ? { weapon: this.playerWeaponShape } : {}),
     })
     this.renderEnemies(enemies)
@@ -340,20 +404,32 @@ export class ArenaScene extends BaseScene {
     })
   }
 
-  /** Read skin color + weapon shape from save.cosmetics. */
+  /** Read skin color + weapon shape + aura color from save.cosmetics. */
   private refreshCosmetics(): void {
     const save = this.services.save
     try {
       const skin = getSkin(save.cosmetics.char.equipped)
       this.playerSkinColor = hexToNum(skin.color)
+      this.playerClothing = skin.clothing
+      this.playerClothingColor = skin.clothingColor ? hexToNum(skin.clothingColor) : undefined
+      this.playerAccessory = skin.accessory
     } catch {
       this.playerSkinColor = 0x000000
+      this.playerClothing = 'tunic'
+      this.playerClothingColor = undefined
+      this.playerAccessory = 'none'
     }
     try {
       const weapon = getWeapon(this.loadout.weaponId)
       this.playerWeaponShape = { shape: weapon.shape, blade: hexToNum(weapon.blade) }
     } catch {
       this.playerWeaponShape = undefined
+    }
+    try {
+      const aura = getAura(save.cosmetics.aura.equipped)
+      this.auraColor = aura.color === 'rainbow' ? 0xff80ff : hexToNum(aura.color)
+    } catch {
+      this.auraColor = 0xffd54a
     }
   }
 
@@ -381,6 +457,23 @@ export class ArenaScene extends BaseScene {
     if (!enemy) return
     const text = (crit ? 'CRIT! -' : '-') + Math.ceil(dmg)
     this.spawnDamagePopup(enemy.x, enemy.y - 50, text, crit)
+    // Slash sparks + blood splatter at impact.
+    const dirX = this.player.attackDirX
+    const dirY = this.player.attackDirY
+    this.particles.spawnSlashFx(enemy.x, enemy.y - 18, dirX, dirY, this.auraColor)
+    this.particles.spawnBlood(enemy.x, enemy.y - 18, dirX, dirY, crit ? 18 : 10)
+    if (crit) {
+      this.runState.cameraShake = Math.max(this.runState.cameraShake, 0.25)
+      this.runState.slowMo = Math.max(this.runState.slowMo, 0.08)
+    }
+  }
+
+  private onSkillCast(_skillId: string): void {
+    // Aura burst around the player whenever a skill fires.
+    this.particles.spawnAuraBurst(this.player.x, this.player.y - 24, this.auraColor, 30)
+    if (_skillId === 'groundPound') {
+      this.particles.spawnShockwave(this.player.x, this.player.y, this.auraColor, 32)
+    }
   }
 
   private onEnemyDeath(enemyId: string, byPlayer: boolean): void {
@@ -497,6 +590,9 @@ export class ArenaScene extends BaseScene {
           hurtFlash: e.hurtFlash,
           iframes: 0,
           color: hexToNum(type.color),
+          clothing: type.clothing,
+          accessory: type.accessory,
+          ...(type.clothingColor ? { clothingColor: hexToNum(type.clothingColor) } : {}),
         },
         type.scale,
       )
@@ -567,6 +663,7 @@ export class ArenaScene extends BaseScene {
     this.projectiles?.clear()
     this.gore?.clear()
     this.obstacleSys?.clear()
+    this.particles?.clear()
   }
 }
 

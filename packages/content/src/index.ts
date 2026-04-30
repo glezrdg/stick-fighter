@@ -74,6 +74,13 @@ export {
 export { SkinSchema, SkinsSchema, type Skin, type Skins } from './schemas/skin'
 
 export {
+  ACCESSORY_KINDS,
+  CLOTHING_KINDS,
+  type AccessoryKind,
+  type ClothingKind,
+} from './schemas/cosmeticKinds'
+
+export {
   WEAPON_SHAPES,
   WeaponSchema,
   WeaponsSchema,

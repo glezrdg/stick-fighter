@@ -1,5 +1,7 @@
 import { z } from 'zod'
 
+import { ACCESSORY_KINDS, CLOTHING_KINDS } from './cosmeticKinds'
+
 export const EnemyTypeSchema = z.object({
   id: z.string().min(1),
   name: z.string(),
@@ -20,6 +22,14 @@ export const EnemyTypeSchema = z.object({
   goldReward: z.number().int().nonnegative(),
   /** Behaviors to run each tick, in order. Resolved against the behavior registry. */
   behaviors: z.array(z.string().min(1)).min(1),
+  /** Visual identity — head accessory and torso clothing. Default 'none' / 'tunic'. */
+  accessory: z.enum(ACCESSORY_KINDS).default('none'),
+  clothing: z.enum(CLOTHING_KINDS).default('tunic'),
+  /** Optional clothing tint override in hex. */
+  clothingColor: z
+    .string()
+    .regex(/^#[0-9a-fA-F]{6}$/)
+    .optional(),
 })
 export type EnemyType = z.infer<typeof EnemyTypeSchema>
 

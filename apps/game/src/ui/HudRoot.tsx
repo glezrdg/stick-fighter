@@ -32,6 +32,8 @@ export const HudRoot: Component<HudRootProps> = (props) => {
   const [wave, setWave] = createSignal(0)
   const [waveTotal, setWaveTotal] = createSignal(0)
   const [waveAlive, setWaveAlive] = createSignal(0)
+  const [combo, setCombo] = createSignal(0)
+  const [maxCombo, setMaxCombo] = createSignal(0)
   const [slots, setSlots] = createSignal<[SkillSlotState, SkillSlotState]>([
     emptySlot(),
     emptySlot(),
@@ -68,6 +70,15 @@ export const HudRoot: Component<HudRootProps> = (props) => {
   const offCd = props.bus.on('skill:cooldown:changed', ({ slot, remaining, total }) => {
     updateSlot(slot, { cooldownRemaining: remaining, cooldownTotal: total })
   })
+  const offCombo = props.bus.on('combo:advance', ({ count }) => {
+    setCombo(count)
+    if (count > maxCombo()) setMaxCombo(count)
+  })
+  const offComboReset = props.bus.on('combo:reset', () => setCombo(0))
+  const offRunStart = props.bus.on('run:start', () => {
+    setCombo(0)
+    setMaxCombo(0)
+  })
 
   onCleanup(() => {
     offHp()
@@ -76,6 +87,9 @@ export const HudRoot: Component<HudRootProps> = (props) => {
     offWaveEnemies()
     offEquipped()
     offCd()
+    offCombo()
+    offComboReset()
+    offRunStart()
   })
 
   const hpPct = () => Math.max(0, Math.min(1, hp() / Math.max(1, maxHp())))
@@ -143,6 +157,46 @@ export const HudRoot: Component<HudRootProps> = (props) => {
           <span style={{ color: '#ffd54a', 'font-weight': 700 }}>GOLD {gold()}</span>
         </div>
       </div>
+
+      {/* Combo counter — center-screen, big when active. */}
+      <Show when={combo() >= 2}>
+        <div
+          style={{
+            position: 'absolute',
+            top: '90px',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            'font-family': 'Inter, system-ui, sans-serif',
+            'font-size': `${20 + Math.min(28, combo() * 2)}px`,
+            'font-weight': 800,
+            color: combo() >= 10 ? '#ff5050' : combo() >= 5 ? '#ffd54a' : '#fff',
+            'text-shadow': '2px 2px 0 #000',
+            'pointer-events': 'none',
+            'letter-spacing': '2px',
+            transition: 'font-size 0.12s ease-out',
+          }}
+        >
+          {combo()}× COMBO
+        </div>
+      </Show>
+
+      <Show when={maxCombo() >= 5}>
+        <div
+          style={{
+            position: 'absolute',
+            top: '52px',
+            right: '12px',
+            'font-family': 'Inter, system-ui, sans-serif',
+            'font-size': '11px',
+            color: '#ffd54a',
+            'text-shadow': '1px 1px 0 #000',
+            opacity: 0.85,
+            'pointer-events': 'none',
+          }}
+        >
+          MAX {maxCombo()}×
+        </div>
+      </Show>
 
       <div
         style={{

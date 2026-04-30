@@ -1,5 +1,7 @@
 import { z } from 'zod'
 
+import { ACCESSORY_KINDS, CLOTHING_KINDS } from './cosmeticKinds'
+
 const HEX_COLOR = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/
 
 export const SkinSchema = z.object({
@@ -11,25 +13,11 @@ export const SkinSchema = z.object({
   armColor: z.string().regex(HEX_COLOR).optional(),
   /** Optional override for legs (defaults to `color`). */
   legColor: z.string().regex(HEX_COLOR).optional(),
-  /** Clothing kind. F2.2 maps these to drawClothing variants. */
-  clothing: z.enum(['tunic', 'wrap', 'robe', 'samurai', 'tank', 'plate', 'cloak']),
+  /** Clothing kind. F2.7 maps these to ClothingRenderer variants. */
+  clothing: z.enum(CLOTHING_KINDS),
   clothingColor: z.string().regex(HEX_COLOR).optional(),
-  /** Accessory kind. F2.2 maps these to drawAccessory variants. */
-  accessory: z.enum([
-    'none',
-    'headband',
-    'topknot',
-    'horns',
-    'demon',
-    'wings',
-    'antenna',
-    'goldenHelm',
-    'coneHat',
-    'iceCrown',
-    'wingedHelm',
-    'jesterCrown',
-    'goggles',
-  ]),
+  /** Accessory kind. F2.7 maps these to AccessoryRenderer variants. */
+  accessory: z.enum(ACCESSORY_KINDS),
   /** Cost in gold (free items use 0). */
   cost: z.number().nonnegative(),
   /** Whether this is a premium (gem-priced) skin. */

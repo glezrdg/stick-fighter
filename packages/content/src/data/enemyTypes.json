@@ -10,7 +10,9 @@
     "attackRange": 55,
     "attackCooldown": 1.0,
     "goldReward": 3,
-    "behaviors": ["meleeChase"]
+    "behaviors": ["meleeChase"],
+    "accessory": "none",
+    "clothing": "tunic"
   },
   {
     "id": "ninja",
@@ -23,7 +25,9 @@
     "attackRange": 60,
     "attackCooldown": 0.83,
     "goldReward": 6,
-    "behaviors": ["meleeChase"]
+    "behaviors": ["meleeChase"],
+    "accessory": "headband",
+    "clothing": "wrap"
   },
   {
     "id": "spear",
@@ -36,7 +40,9 @@
     "attackRange": 200,
     "attackCooldown": 1.83,
     "goldReward": 7,
-    "behaviors": ["rangedKite"]
+    "behaviors": ["rangedKite"],
+    "accessory": "spear",
+    "clothing": "tunic"
   },
   {
     "id": "brute",
@@ -49,7 +55,9 @@
     "attackRange": 60,
     "attackCooldown": 1.25,
     "goldReward": 8,
-    "behaviors": ["meleeChase"]
+    "behaviors": ["meleeChase"],
+    "accessory": "horns",
+    "clothing": "tank"
   },
   {
     "id": "dual",
@@ -62,7 +70,9 @@
     "attackRange": 50,
     "attackCooldown": 0.58,
     "goldReward": 7,
-    "behaviors": ["meleeChase"]
+    "behaviors": ["meleeChase"],
+    "accessory": "dualBlades",
+    "clothing": "tank"
   },
   {
     "id": "berserk",
@@ -75,7 +85,9 @@
     "attackRange": 65,
     "attackCooldown": 0.75,
     "goldReward": 14,
-    "behaviors": ["chargeRush"]
+    "behaviors": ["chargeRush"],
+    "accessory": "rage",
+    "clothing": "wrap"
   },
   {
     "id": "mage",
@@ -88,7 +100,9 @@
     "attackRange": 180,
     "attackCooldown": 1.83,
     "goldReward": 12,
-    "behaviors": ["rangedKite"]
+    "behaviors": ["rangedKite"],
+    "accessory": "staff",
+    "clothing": "robe"
   },
   {
     "id": "heavy",
@@ -101,7 +115,9 @@
     "attackRange": 70,
     "attackCooldown": 1.33,
     "goldReward": 25,
-    "behaviors": ["meleeChase"]
+    "behaviors": ["meleeChase"],
+    "accessory": "helm",
+    "clothing": "plate"
   },
   {
     "id": "boss",
@@ -114,6 +130,8 @@
     "attackRange": 80,
     "attackCooldown": 1.25,
     "goldReward": 130,
-    "behaviors": ["bossPhase"]
+    "behaviors": ["bossPhase"],
+    "accessory": "crown",
+    "clothing": "samurai"
   }
 ]
