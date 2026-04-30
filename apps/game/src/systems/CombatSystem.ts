@@ -10,7 +10,7 @@ export const COMBO_RESET_SEC = 1.5
 /** Forward velocity boost applied at the start of each attack (px/frame at 60Hz). */
 const LUNGE_PX_PER_FRAME = 2.5
 /** Cone half-angle for melee hits: dot(attackDir, toEnemy) > this connects. */
-const HIT_CONE_DOT_THRESHOLD = 0.3
+export const HIT_CONE_DOT_THRESHOLD = 0.3
 /** Hurt flash duration applied to enemies on hit (seconds). */
 const ENEMY_HURT_FLASH_SEC = 0.12
 
@@ -26,6 +26,18 @@ export interface EnemyTarget {
   goldReward?: number
 }
 
+/** Swing geometry handed to the optional onSwing callback so scenes can
+ *  resolve secondary hits (obstacles, decals, audio). */
+export interface SwingResolveContext {
+  originX: number
+  originY: number
+  dirX: number
+  dirY: number
+  reach: number
+  arcDot: number
+  all: boolean
+}
+
 export interface CombatSystemOptions {
   bus: EventBus
   attackPatterns: AttackPatterns
@@ -34,6 +46,9 @@ export interface CombatSystemOptions {
   /** Returns the current effective damage multiplier from BuffSystem.
    *  Defaults to 1 if not provided. */
   getDmgMul?: () => number
+  /** Invoked when a swing is fired so callers can resolve hits against
+   *  non-enemy targets (e.g. destructible obstacles). */
+  onSwing?: (ctx: SwingResolveContext) => void
 }
 
 /**
@@ -48,12 +63,14 @@ export class CombatSystem {
   private readonly attackPatterns: AttackPatterns
   private readonly getEnemies: (() => Iterable<EnemyTarget>) | undefined
   private readonly getDmgMul: () => number
+  private readonly onSwing: ((ctx: SwingResolveContext) => void) | undefined
 
   constructor(opts: CombatSystemOptions) {
     this.bus = opts.bus
     this.attackPatterns = opts.attackPatterns
     this.getEnemies = opts.getEnemies
     this.getDmgMul = opts.getDmgMul ?? (() => 1)
+    this.onSwing = opts.onSwing
   }
 
   /** Tick timers: counts the active attack down, resets the combo step on idle. */
@@ -105,6 +122,16 @@ export class CombatSystem {
     player.attackStepTimer = COMBO_RESET_SEC
 
     this.bus.emit('combo:advance', { count: player.attackStep })
+
+    this.onSwing?.({
+      originX: player.x,
+      originY: player.y,
+      dirX: aim.x,
+      dirY: aim.y,
+      reach: pattern.reach,
+      arcDot: HIT_CONE_DOT_THRESHOLD,
+      all: pattern.all === true,
+    })
 
     // ---- Resolve hits ----
     const enemies = this.getEnemies?.()

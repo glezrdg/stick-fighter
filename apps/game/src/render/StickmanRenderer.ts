@@ -40,6 +40,52 @@ export function slashRSwingCurve(progress: number): number {
   }
 }
 
+/** slashL is the mirrored version of slashR (windup right, strike left). */
+export function slashLSwingCurve(progress: number): number {
+  return -slashRSwingCurve(progress)
+}
+
+/** Two-handed vertical chop: high windup → fast downward strike → recover. */
+export function chopSwingCurve(progress: number): number {
+  if (progress < 0.35) return -1.6 - progress * 0.8
+  if (progress < 0.65) {
+    const u = (progress - 0.35) / 0.3
+    return -1.9 + u * 3.5
+  }
+  const u = (progress - 0.65) / 0.35
+  return 1.6 - u * 1.0
+}
+
+/** Uppercut: arm starts low-back, ARC up to high-front. */
+export function uppercutSwingCurve(progress: number): number {
+  if (progress < 0.3) {
+    const u = progress / 0.3
+    return 1.4 - u * 0.4
+  }
+  if (progress < 0.65) {
+    const u = (progress - 0.3) / 0.35
+    return 1.0 - u * 2.6
+  }
+  const u = (progress - 0.65) / 0.35
+  return -1.6 + u * 0.4
+}
+
+/** Spin: full 720° rotation across the duration. */
+export function spinSwingCurve(progress: number): number {
+  return -Math.PI / 2 + progress * Math.PI * 4
+}
+
+/** Kick leg phase (radians of thigh sweep toward attack dir). */
+export function kickLegPhase(progress: number): number {
+  if (progress < 0.3) return (progress / 0.3) * 0.5
+  if (progress < 0.6) {
+    const u = (progress - 0.3) / 0.3
+    return 0.5 + u * 1.0
+  }
+  const u = (progress - 0.6) / 0.4
+  return 1.5 - u * 1.5
+}
+
 /** The minimal slice of player/enemy state the renderer needs. */
 export interface StickmanRenderState {
   vx: number
@@ -107,35 +153,73 @@ export class StickmanRenderer {
     g.lineStyle(lineWidth, color, 1)
 
     // ---- LEGS ----
-    const legSwingAmp = G.LEG_SWING_AMPLITUDE
-    const swingL = Math.sin(p.walkPhase) * legSwingAmp
-    const swingR = Math.sin(p.walkPhase + Math.PI) * legSwingAmp
-    this.drawLimb(
-      g,
-      -G.HIP_OFFSET_X * scale,
-      pelvisY - G.HIP_OFFSET_Y * scale,
-      swingL,
-      Math.max(0, -swingL) * G.LEG_KNEE_BEND_FACTOR,
-      G.UPPER_LEG_LENGTH * scale,
-      G.LOWER_LEG_LENGTH * scale,
-      1,
-      'foot',
-      color,
-      lineWidth,
-    )
-    this.drawLimb(
-      g,
-      G.HIP_OFFSET_X * scale,
-      pelvisY - G.HIP_OFFSET_Y * scale,
-      swingR,
-      Math.max(0, -swingR) * G.LEG_KNEE_BEND_FACTOR,
-      G.UPPER_LEG_LENGTH * scale,
-      G.LOWER_LEG_LENGTH * scale,
-      1,
-      'foot',
-      color,
-      lineWidth,
-    )
+    const isKick = isAttacking && p.attackKind === 'kick'
+    const leftHipX = -G.HIP_OFFSET_X * scale
+    const rightHipX = G.HIP_OFFSET_X * scale
+    const hipY = pelvisY - G.HIP_OFFSET_Y * scale
+    if (isKick) {
+      const progress = p.attackDuration > 0 ? 1 - p.attackTimer / p.attackDuration : 0
+      const dirAngle = Math.atan2(p.attackDirX, -p.attackDirY)
+      const phase = kickLegPhase(progress)
+      // Right leg performs the kick.
+      this.drawLimb(
+        g,
+        rightHipX,
+        hipY,
+        dirAngle * Math.min(phase, 1),
+        Math.max(0, 1 - phase) * 1.1,
+        G.UPPER_LEG_LENGTH * scale,
+        G.LOWER_LEG_LENGTH * scale,
+        1,
+        'foot',
+        color,
+        lineWidth,
+      )
+      // Left leg planted (slight bend).
+      this.drawLimb(
+        g,
+        leftHipX,
+        hipY,
+        0.05,
+        0.4,
+        G.UPPER_LEG_LENGTH * scale,
+        G.LOWER_LEG_LENGTH * scale,
+        1,
+        'foot',
+        color,
+        lineWidth,
+      )
+    } else {
+      const legSwingAmp = G.LEG_SWING_AMPLITUDE
+      const swingL = Math.sin(p.walkPhase) * legSwingAmp
+      const swingR = Math.sin(p.walkPhase + Math.PI) * legSwingAmp
+      this.drawLimb(
+        g,
+        leftHipX,
+        hipY,
+        swingL,
+        Math.max(0, -swingL) * G.LEG_KNEE_BEND_FACTOR,
+        G.UPPER_LEG_LENGTH * scale,
+        G.LOWER_LEG_LENGTH * scale,
+        1,
+        'foot',
+        color,
+        lineWidth,
+      )
+      this.drawLimb(
+        g,
+        rightHipX,
+        hipY,
+        swingR,
+        Math.max(0, -swingR) * G.LEG_KNEE_BEND_FACTOR,
+        G.UPPER_LEG_LENGTH * scale,
+        G.LOWER_LEG_LENGTH * scale,
+        1,
+        'foot',
+        color,
+        lineWidth,
+      )
+    }
 
     // ---- TORSO ----
     g.lineStyle(lineWidth, color, 1)
@@ -209,6 +293,51 @@ export class StickmanRenderer {
     }
   }
 
+  private drawSlashArm(
+    g: Phaser.GameObjects.Graphics,
+    rootX: number,
+    rootY: number,
+    swordAng: number,
+    armLen: number,
+    color: number,
+    lineWidth: number,
+  ): void {
+    const handX = rootX + Math.sin(swordAng) * armLen
+    const handY = rootY - Math.cos(swordAng) * armLen
+    g.lineStyle(lineWidth, color, 1)
+    g.beginPath()
+    g.moveTo(rootX, rootY)
+    g.lineTo(handX, handY)
+    g.strokePath()
+    g.fillStyle(color, 1)
+    g.fillCircle(handX, handY, lineWidth * 0.55)
+  }
+
+  private drawIdleArm(
+    g: Phaser.GameObjects.Graphics,
+    rootX: number,
+    rootY: number,
+    scale: number,
+    dir: 1 | -1,
+    color: number,
+    lineWidth: number,
+  ): void {
+    const G = STICKMAN_GEOMETRY
+    this.drawLimb(
+      g,
+      rootX,
+      rootY,
+      0.2 * dir,
+      0.4,
+      G.UPPER_ARM_LENGTH * scale,
+      G.LOWER_ARM_LENGTH * scale,
+      dir,
+      'hand',
+      color,
+      lineWidth,
+    )
+  }
+
   private drawArms(
     g: Phaser.GameObjects.Graphics,
     p: StickmanRenderState,
@@ -223,44 +352,91 @@ export class StickmanRenderer {
     const shoulderYOff = shoulderY + G.SHOULDER_OFFSET_Y * scale
 
     const isAttacking = p.attackTimer > 0 && p.attackKind !== null
-    const isSlashR = isAttacking && p.attackKind === 'slashR'
 
-    if (isSlashR) {
-      // Right arm performs the slash; left arm idles.
+    if (isAttacking) {
       const progress = p.attackDuration > 0 ? 1 - p.attackTimer / p.attackDuration : 0
-      const angOff = slashRSwingCurve(progress)
-      // Convert attackDir to angle (Y+ is down, so this matches the legacy formula).
       const dirAngle = Math.atan2(p.attackDirX, -p.attackDirY)
-      const swordAng = dirAngle + angOff
-      // The slash arm is drawn as a single straight stroke at swordAng,
-      // length = upper + lower arm.
       const armLen = (G.UPPER_ARM_LENGTH + G.LOWER_ARM_LENGTH) * scale * 0.95
-      const handX = rightShoulderX + Math.sin(swordAng) * armLen
-      const handY = shoulderYOff - Math.cos(swordAng) * armLen
-
-      g.lineStyle(lineWidth, color, 1)
-      g.beginPath()
-      g.moveTo(rightShoulderX, shoulderYOff)
-      g.lineTo(handX, handY)
-      g.strokePath()
-      g.fillStyle(color, 1)
-      g.fillCircle(handX, handY, lineWidth * 0.55)
-
-      // Idle left arm hanging.
-      this.drawLimb(
-        g,
-        leftShoulderX,
-        shoulderYOff,
-        0.2,
-        0.4,
-        G.UPPER_ARM_LENGTH * scale,
-        G.LOWER_ARM_LENGTH * scale,
-        -1,
-        'hand',
-        color,
-        lineWidth,
-      )
-      return
+      switch (p.attackKind) {
+        case 'slashR':
+          this.drawSlashArm(
+            g,
+            rightShoulderX,
+            shoulderYOff,
+            dirAngle + slashRSwingCurve(progress),
+            armLen,
+            color,
+            lineWidth,
+          )
+          this.drawIdleArm(g, leftShoulderX, shoulderYOff, scale, -1, color, lineWidth)
+          return
+        case 'slashL':
+          this.drawSlashArm(
+            g,
+            leftShoulderX,
+            shoulderYOff,
+            dirAngle + slashLSwingCurve(progress),
+            armLen,
+            color,
+            lineWidth,
+          )
+          this.drawIdleArm(g, rightShoulderX, shoulderYOff, scale, 1, color, lineWidth)
+          return
+        case 'chop': {
+          // Two-handed vertical chop — both arms converge on the same hand.
+          const ang = dirAngle + chopSwingCurve(progress)
+          const handX = Math.sin(ang) * armLen
+          const handY = -Math.cos(ang) * armLen
+          g.lineStyle(lineWidth, color, 1)
+          g.beginPath()
+          g.moveTo(leftShoulderX, shoulderYOff)
+          g.lineTo(handX, handY)
+          g.moveTo(rightShoulderX, shoulderYOff)
+          g.lineTo(handX, handY)
+          g.strokePath()
+          g.fillStyle(color, 1)
+          g.fillCircle(handX, handY, lineWidth * 0.6)
+          return
+        }
+        case 'uppercut': {
+          this.drawSlashArm(
+            g,
+            rightShoulderX,
+            shoulderYOff,
+            dirAngle + uppercutSwingCurve(progress),
+            armLen,
+            color,
+            lineWidth,
+          )
+          this.drawIdleArm(g, leftShoulderX, shoulderYOff, scale, -1, color, lineWidth)
+          return
+        }
+        case 'spin': {
+          // Single arm rotates 720° around the body.
+          const ang = spinSwingCurve(progress)
+          const handX = Math.sin(ang) * armLen
+          const handY = -Math.cos(ang) * armLen
+          g.lineStyle(lineWidth, color, 1)
+          g.beginPath()
+          g.moveTo(0, shoulderYOff)
+          g.lineTo(handX, handY)
+          g.strokePath()
+          g.fillStyle(color, 1)
+          g.fillCircle(handX, handY, lineWidth * 0.6)
+          // Trailing arc (motion line).
+          g.lineStyle(lineWidth * 0.6, 0xffd54a, 0.5)
+          g.beginPath()
+          g.arc(0, shoulderYOff, armLen, ang - 1.2 - Math.PI / 2, ang - Math.PI / 2)
+          g.strokePath()
+          return
+        }
+        case 'kick': {
+          // Both arms balanced at the sides; render legs explicitly via kick override.
+          this.drawIdleArm(g, leftShoulderX, shoulderYOff, scale, -1, color, lineWidth)
+          this.drawIdleArm(g, rightShoulderX, shoulderYOff, scale, 1, color, lineWidth)
+          return
+        }
+      }
     }
 
     // Idle / walking arms: oscillate anti-phase with legs.

@@ -31,6 +31,8 @@ export type GameEvents = {
   'enemy:death': { enemyId: string; byPlayer: boolean }
   'combo:advance': { count: number }
   'combo:reset': Record<string, never>
+  /** Fired when a destructible obstacle explodes (barrel/crate). */
+  'obstacle:explode': { x: number; y: number; type: 'barrel' | 'crate' | 'column' }
 
   // ---- Currency ----------------------------------------------------
   'gold:changed': { gold: number; delta: number }
@@ -39,6 +41,12 @@ export type GameEvents = {
   // ---- Waves -------------------------------------------------------
   'wave:start': { wave: number; totalEnemies: number }
   'wave:complete': { wave: number }
+  /** Sent right after wave:complete with the 3 (or N) buffs to choose from.
+   *  HUD renders a card overlay; user click → emits `wave:buff:pick`. */
+  'wave:buff:offer': { wave: number; buffIds: readonly string[] }
+  'wave:buff:pick': { buffId: string }
+  /** Combat resumes immediately after this. Useful for HUD to hide the cards. */
+  'wave:resume': { wave: number }
 
   // ---- Skills ------------------------------------------------------
   'skill:cast': { skillId: string; slot: 0 | 1 }

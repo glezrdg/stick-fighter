@@ -12,6 +12,7 @@ import { PreloadScene } from './scenes/PreloadScene'
 import './skills'
 import { HudRoot } from './ui/HudRoot'
 import { JoystickOverlay } from './ui/JoystickOverlay'
+import { WaveBuffCards } from './ui/WaveBuffCards'
 
 // Phase 1: services that don't need the Phaser canvas.
 const partialServices = bootstrapPreGame()
@@ -24,6 +25,7 @@ if (hudRoot) {
       <>
         <HudRoot bus={partialServices.bus} initialHp={100} initialMaxHp={100} />
         <JoystickOverlay bus={partialServices.bus} />
+        <WaveBuffCards bus={partialServices.bus} />
       </>
     ),
     hudRoot,

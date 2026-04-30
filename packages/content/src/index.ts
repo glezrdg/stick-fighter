@@ -4,11 +4,13 @@ import attackPatternsRaw from './data/attackPatterns.json'
 import aurasRaw from './data/auras.json'
 import enemyTypesRaw from './data/enemyTypes.json'
 import skinsRaw from './data/skins.json'
+import waveBuffsRaw from './data/waveBuffs.json'
 import weaponsRaw from './data/weapons.json'
 import { AttackPatternsSchema, type AttackPatterns } from './schemas/attackPattern'
 import { AurasSchema, type Aura, type Auras } from './schemas/aura'
 import { EnemyTypesSchema, type EnemyType, type EnemyTypes } from './schemas/enemyType'
 import { SkinsSchema, type Skin, type Skins } from './schemas/skin'
+import { WaveBuffsSchema, type WaveBuff, type WaveBuffs } from './schemas/waveBuff'
 import { WeaponsSchema, type Weapon, type Weapons } from './schemas/weapon'
 
 export const STICK_CONTENT_VERSION = '0.0.0'
@@ -19,6 +21,7 @@ export const enemyTypes: EnemyTypes = EnemyTypesSchema.parse(enemyTypesRaw)
 export const skins: Skins = SkinsSchema.parse(skinsRaw)
 export const weapons: Weapons = WeaponsSchema.parse(weaponsRaw)
 export const auras: Auras = AurasSchema.parse(aurasRaw)
+export const waveBuffs: WaveBuffs = WaveBuffsSchema.parse(waveBuffsRaw)
 
 export function getEnemyType(id: string): EnemyType {
   const t = enemyTypes.find((e) => e.id === id)
@@ -42,6 +45,12 @@ export function getAura(id: string): Aura {
   const a = auras.find((x) => x.id === id)
   if (!a) throw new Error(`[content] unknown aura "${id}"`)
   return a
+}
+
+export function getWaveBuff(id: string): WaveBuff {
+  const b = waveBuffs.find((x) => x.id === id)
+  if (!b) throw new Error(`[content] unknown wave buff "${id}"`)
+  return b
 }
 
 export {
@@ -72,3 +81,12 @@ export {
   type WeaponShape,
   type Weapons,
 } from './schemas/weapon'
+
+export {
+  WAVE_BUFF_KINDS,
+  WaveBuffSchema,
+  WaveBuffsSchema,
+  type WaveBuff,
+  type WaveBuffKind,
+  type WaveBuffs,
+} from './schemas/waveBuff'

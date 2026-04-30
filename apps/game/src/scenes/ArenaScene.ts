@@ -7,8 +7,11 @@ import { ARENA, CAM_ZOOM } from '../core/arena'
 import '../enemies'
 import { type RunState, createRunState } from '../core/runState'
 import type { Enemy } from '../entities/Enemy'
+import type { Obstacle } from '../entities/Obstacle'
 import { type Player, createPlayer } from '../entities/Player'
 import type { Projectile } from '../entities/Projectile'
+import { GoreRenderer } from '../render/GoreRenderer'
+import { ObstacleRenderer } from '../render/ObstacleRenderer'
 import { StickmanRenderer } from '../render/StickmanRenderer'
 // Side-effect: register every skill.
 import '../skills'
@@ -21,9 +24,12 @@ import { VAMPIRE_HEAL_PER_KILL } from '../skills/Vampire'
 import { type EffectiveStats, BuffSystem } from '../systems/BuffSystem'
 import { CombatSystem } from '../systems/CombatSystem'
 import { EnemySystem } from '../systems/EnemySystem'
+import { GoreSystem } from '../systems/GoreSystem'
 import { updateMovement } from '../systems/MovementSystem'
+import { ObstacleSystem } from '../systems/ObstacleSystem'
 import { ProjectileSystem } from '../systems/ProjectileSystem'
 import { SkillSystem } from '../systems/SkillSystem'
+import { WaveBuffSystem } from '../systems/WaveBuffSystem'
 import { WaveSystem } from '../systems/WaveSystem'
 
 import { BaseScene } from './BaseScene'
@@ -51,14 +57,20 @@ export class ArenaScene extends BaseScene {
   private enemySys!: EnemySystem
   private skillSystem!: SkillSystem
   private projectiles!: ProjectileSystem
+  private gore!: GoreSystem
+  private obstacleSys!: ObstacleSystem
   private stickman!: StickmanRenderer
 
   private playerGraphics!: Phaser.GameObjects.Graphics
   private enemyGraphics = new Map<string, Phaser.GameObjects.Graphics>()
   private projectileGraphics!: Phaser.GameObjects.Graphics
+  private goreFloorGraphics!: Phaser.GameObjects.Graphics
+  private gorePartsGraphics!: Phaser.GameObjects.Graphics
+  private obstacleGraphics!: Phaser.GameObjects.Graphics
 
   private tornadoTickAcc = 0
   private busUnsubs: Array<() => void> = []
+  private activePopups = 0
 
   constructor(services: ConstructorParameters<typeof BaseScene>[1]) {
     super(ArenaScene.KEY, services)
@@ -84,11 +96,19 @@ export class ArenaScene extends BaseScene {
     // ---- Systems ----
     this.waves = new WaveSystem({ bus: this.bus, rng: this.rng })
     this.projectiles = new ProjectileSystem({ bus: this.bus })
+    this.obstacleSys = new ObstacleSystem({ bus: this.bus, rng: this.rng })
+    this.obstacleSys.generate()
     this.combat = new CombatSystem({
       bus: this.bus,
       attackPatterns,
       getEnemies: () => this.waves.getEnemies(),
       getDmgMul: () => this.stats.dmgMul,
+      onSwing: (ctx) =>
+        this.obstacleSys.applyMeleeSwing({
+          ...ctx,
+          enemies: this.waves.getEnemies(),
+          player: this.player,
+        }),
     })
     this.enemySys = new EnemySystem({
       bus: this.bus,
@@ -96,6 +116,7 @@ export class ArenaScene extends BaseScene {
       projectiles: this.projectiles,
     })
     this.skillSystem = new SkillSystem({ bus: this.bus })
+    this.gore = new GoreSystem({ rng: this.rng })
     this.stickman = new StickmanRenderer()
 
     // ---- Arena visuals ----
@@ -107,6 +128,10 @@ export class ArenaScene extends BaseScene {
     for (let x = 0; x <= ARENA.width; x += 60) grid.lineBetween(x, 0, x, ARENA.height)
     for (let y = 0; y <= ARENA.height; y += 60) grid.lineBetween(0, y, ARENA.width, y)
 
+    // Floor layer (blood pools, corpses) goes BELOW the player and parts.
+    this.goreFloorGraphics = this.add.graphics()
+    this.obstacleGraphics = this.add.graphics()
+    this.gorePartsGraphics = this.add.graphics()
     this.playerGraphics = this.add.graphics()
     this.projectileGraphics = this.add.graphics()
 
@@ -118,12 +143,19 @@ export class ArenaScene extends BaseScene {
 
     // ---- Bus wiring ----
     this.busUnsubs.push(
-      this.bus.on('input:attack', () => this.combat.tryAttack(this.player)),
-      this.bus.on('input:skill', ({ slot }) => this.castSkill(slot)),
+      this.bus.on('input:attack', () => {
+        if (!this.runState.paused) this.combat.tryAttack(this.player)
+      }),
+      this.bus.on('input:skill', ({ slot }) => {
+        if (!this.runState.paused) this.castSkill(slot)
+      }),
       this.bus.on('enemy:death', ({ enemyId, byPlayer }) => this.onEnemyDeath(enemyId, byPlayer)),
+      this.bus.on('combat:hit', ({ targetId, dmg, crit }) => this.onCombatHit(targetId, dmg, crit)),
       this.bus.on('wave:start', ({ wave }) => {
         this.runState.wave = wave
       }),
+      this.bus.on('wave:complete', ({ wave }) => this.onWaveComplete(wave)),
+      this.bus.on('wave:buff:pick', ({ buffId }) => this.onBuffPick(buffId)),
       this.bus.on('player:death', () => this.endRun('death')),
     )
 
@@ -146,6 +178,7 @@ export class ArenaScene extends BaseScene {
 
   override update(_time: number, deltaMs: number): void {
     const dt = dtFromPhaser(deltaMs)
+    if (this.runState.paused) return
     this.runState.elapsed += dt
 
     // Decay run-state timers.
@@ -179,14 +212,23 @@ export class ArenaScene extends BaseScene {
       }
     }
 
-    // Enemy + projectile tick + waves.
+    // Enemy + projectile tick + waves + gore + obstacles.
     const enemies = this.waves.getEnemies()
     this.enemySys.update(enemies, this.player, dt)
     this.projectiles.update(this.player, dt)
     this.waves.update(dt)
     this.waves.reapDead()
+    this.gore.update(dt)
+    this.obstacleSys.update(dt)
+
+    // Player & enemy collision against obstacles.
+    this.obstacleSys.applyPlayerCollision(this.player)
+    for (const e of enemies)
+      this.obstacleSys.applyCollision(e, 16 * (getEnemyType(e.typeId).scale || 1))
 
     // Render.
+    this.renderGore()
+    this.renderObstacles(this.obstacleSys.getAll())
     this.playerGraphics.setPosition(this.player.x, this.player.y)
     this.stickman.draw(this.playerGraphics, this.player)
     this.renderEnemies(enemies)
@@ -243,16 +285,61 @@ export class ArenaScene extends BaseScene {
     }
   }
 
+  private onWaveComplete(wave: number): void {
+    this.runState.paused = true
+    const offer = WaveBuffSystem.rollOffer(this.rng, 3)
+    this.bus.emit('wave:buff:offer', { wave, buffIds: offer.map((b) => b.id) })
+  }
+
+  private onBuffPick(buffId: string): void {
+    if (!this.runState.paused) return
+    WaveBuffSystem.apply(buffId, this.runState, this.player)
+    this.recomputeStats()
+    this.bus.emit('player:hp:changed', { hp: this.player.hp, maxHp: this.player.maxHp })
+    this.runState.paused = false
+    this.bus.emit('wave:resume', { wave: this.runState.wave })
+    this.waves.startNextWave()
+  }
+
+  private recomputeStats(): void {
+    this.stats = BuffSystem.computeStats({
+      ownedSkills: F2_1_TEST_LOADOUT.ownedSkills,
+      runBuffs: this.runState.runBuffs,
+      equippedWeaponId: F2_1_TEST_LOADOUT.weaponId,
+      weaponLevel: F2_1_TEST_LOADOUT.weaponLevel,
+    })
+  }
+
+  private onCombatHit(targetId: string, dmg: number, crit: boolean): void {
+    const enemy = this.waves.getEnemies().find((e) => e.id === targetId)
+    if (!enemy) return
+    const text = (crit ? 'CRIT! -' : '-') + Math.ceil(dmg)
+    this.spawnDamagePopup(enemy.x, enemy.y - 50, text, crit)
+  }
+
   private onEnemyDeath(enemyId: string, byPlayer: boolean): void {
-    if (!byPlayer) return
     const enemy = this.waves.getEnemies().find((e) => e.id === enemyId)
     if (!enemy) return
     const type = getEnemyType(enemy.typeId)
+    const aliveCount = this.waves.getEnemies().reduce((n, e) => n + (e.hp > 0 ? 1 : 0), 0)
+    this.gore.addKill({
+      x: enemy.x,
+      y: enemy.y,
+      color: hexToNum(type.color),
+      scale: type.scale,
+      knockbackX: -enemy.vx * 0.3,
+      knockbackY: -enemy.vy * 0.3,
+      aliveEnemies: aliveCount,
+    })
+    this.runState.cameraShake = Math.max(this.runState.cameraShake, aliveCount > 8 ? 0.08 : 0.16)
+
+    if (!byPlayer) return
     const goldGain = Math.floor(type.goldReward * this.stats.goldMul)
     this.runState.gold += goldGain
     this.runState.kills += 1
     this.bus.emit('gold:changed', { gold: this.runState.gold, delta: goldGain })
     this.bus.emit('kills:changed', { kills: this.runState.kills })
+    this.spawnDamagePopup(enemy.x, enemy.y - 70, `+${goldGain} 🪙`, false, '#ffd54a')
 
     // Vampire passive.
     if (
@@ -263,6 +350,58 @@ export class ArenaScene extends BaseScene {
       this.player.hp = Math.min(this.player.maxHp, this.player.hp + VAMPIRE_HEAL_PER_KILL)
       this.bus.emit('player:hp:changed', { hp: this.player.hp, maxHp: this.player.maxHp })
     }
+  }
+
+  /** Spawn a floating combat number above an enemy. Auto-despawns after 700ms. */
+  private spawnDamagePopup(
+    x: number,
+    y: number,
+    text: string,
+    crit: boolean,
+    color?: string,
+  ): void {
+    const MAX = 14
+    if (this.activePopups >= MAX && !crit) return
+    if (this.activePopups >= MAX * 1.5) return
+    const txt = this.add
+      .text(x, y, text, {
+        fontFamily: 'Inter, system-ui, sans-serif',
+        fontSize: crit ? '20px' : '14px',
+        color: color ?? (crit ? '#ff5050' : '#ffffff'),
+        fontStyle: crit ? 'bold' : 'normal',
+        stroke: '#000000',
+        strokeThickness: 3,
+      })
+      .setOrigin(0.5, 0.5)
+      .setDepth(1000)
+    this.activePopups++
+    this.tweens.add({
+      targets: txt,
+      y: y - 30,
+      alpha: 0,
+      duration: 700,
+      ease: 'Cubic.easeOut',
+      onComplete: () => {
+        txt.destroy()
+        this.activePopups--
+      },
+    })
+  }
+
+  private renderObstacles(obstacles: readonly Obstacle[]): void {
+    const g = this.obstacleGraphics
+    g.clear()
+    for (const o of obstacles) ObstacleRenderer.draw(g, o)
+  }
+
+  private renderGore(): void {
+    const floor = this.goreFloorGraphics
+    const parts = this.gorePartsGraphics
+    floor.clear()
+    parts.clear()
+    for (const pool of this.gore.getBloodPools()) GoreRenderer.drawBloodPool(floor, pool)
+    for (const corpse of this.gore.getCorpses()) GoreRenderer.drawCorpse(floor, corpse)
+    for (const bp of this.gore.getBodyParts()) GoreRenderer.drawBodyPart(parts, bp)
   }
 
   private renderEnemies(enemies: readonly Enemy[]): void {
@@ -351,6 +490,8 @@ export class ArenaScene extends BaseScene {
     for (const g of this.enemyGraphics.values()) g.destroy()
     this.enemyGraphics.clear()
     this.projectiles?.clear()
+    this.gore?.clear()
+    this.obstacleSys?.clear()
   }
 }
 

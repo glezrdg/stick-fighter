@@ -1,0 +1,66 @@
+[
+  {
+    "id": "filoAfilado",
+    "kind": "dmg",
+    "icon": "⚔️",
+    "name": "FILO AFILADO",
+    "desc": "+25% daño base",
+    "value": 0.25
+  },
+  {
+    "id": "manosRapidas",
+    "kind": "atkSpeed",
+    "icon": "⚡",
+    "name": "MANOS RÁPIDAS",
+    "desc": "+20% velocidad de ataque",
+    "value": 0.2
+  },
+  {
+    "id": "ojoAsesino",
+    "kind": "crit",
+    "icon": "🎯",
+    "name": "OJO ASESINO",
+    "desc": "+15% chance de crítico",
+    "value": 0.15
+  },
+  {
+    "id": "pielDura",
+    "kind": "hpMax",
+    "icon": "❤️",
+    "name": "PIEL DURA",
+    "desc": "+25 vida máx (cura ahora)",
+    "value": 25
+  },
+  {
+    "id": "regen",
+    "kind": "regen",
+    "icon": "✨",
+    "name": "REGENERACIÓN",
+    "desc": "+1 HP/seg",
+    "value": 1
+  },
+  {
+    "id": "golpePesado",
+    "kind": "knockback",
+    "icon": "💢",
+    "name": "GOLPE PESADO",
+    "desc": "+50% knockback",
+    "value": 0.5
+  },
+  {
+    "id": "codicia",
+    "kind": "gold",
+    "icon": "🪙",
+    "name": "CODICIA",
+    "desc": "+30% oro ganado",
+    "value": 0.3
+  },
+  {
+    "id": "banquete",
+    "kind": "heal",
+    "icon": "🍖",
+    "name": "BANQUETE",
+    "desc": "Recupera toda la vida",
+    "value": 0
+  }
+]
