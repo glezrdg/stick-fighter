@@ -34,8 +34,33 @@ export interface RoomPlayer {
   y: number
   vx: number
   vy: number
+  facingX: number
+  facingY: number
+  walkPhase: number
+  attackKind: string
+  attackTimer: number
+  attackDuration: number
+  attackDirX: number
+  attackDirY: number
   hp: number
   maxHp: number
+}
+
+export interface RoomEnemy {
+  id: string
+  typeId: string
+  x: number
+  y: number
+  vx: number
+  vy: number
+  facingX: number
+  facingY: number
+  walkPhase: number
+  attackTimer: number
+  attackDuration: number
+  hp: number
+  maxHp: number
+  hurtFlash: number
 }
 
 export interface RoomSnapshot {
@@ -46,6 +71,7 @@ export interface RoomSnapshot {
   waveAlive: number
   waveTotal: number
   players: RoomPlayer[]
+  enemies: RoomEnemy[]
 }
 
 type Listener = (snap: RoomSnapshot) => void
@@ -123,6 +149,10 @@ export class NetClient {
     this.room?.send('input:move', { x, y })
   }
 
+  sendAttack(): void {
+    this.room?.send('input:attack')
+  }
+
   sendReady(): void {
     this.room?.send('player:ready')
   }
@@ -190,7 +220,8 @@ function stateToSnapshot(state: unknown): RoomSnapshot {
     wave?: number
     waveAlive?: number
     waveTotal?: number
-    players?: Map<string, unknown> | { forEach: (cb: (p: unknown, key: string) => void) => void }
+    players?: { forEach: (cb: (p: unknown, key: string) => void) => void }
+    enemies?: ArrayLike<unknown> & { forEach?: (cb: (e: unknown, i: number) => void) => void }
   }
   const players: RoomPlayer[] = []
   s.players?.forEach((p: unknown, key: string) => {
@@ -204,10 +235,40 @@ function stateToSnapshot(state: unknown): RoomSnapshot {
       y: pp.y ?? 0,
       vx: pp.vx ?? 0,
       vy: pp.vy ?? 0,
+      facingX: pp.facingX ?? 1,
+      facingY: pp.facingY ?? 0,
+      walkPhase: pp.walkPhase ?? 0,
+      attackKind: pp.attackKind ?? '',
+      attackTimer: pp.attackTimer ?? 0,
+      attackDuration: pp.attackDuration ?? 0,
+      attackDirX: pp.attackDirX ?? 1,
+      attackDirY: pp.attackDirY ?? 0,
       hp: pp.hp ?? 0,
       maxHp: pp.maxHp ?? 100,
     })
   })
+  const enemies: RoomEnemy[] = []
+  if (s.enemies && typeof s.enemies.forEach === 'function') {
+    s.enemies.forEach((e: unknown) => {
+      const ee = e as Partial<RoomEnemy>
+      enemies.push({
+        id: ee.id ?? '',
+        typeId: ee.typeId ?? 'grunt',
+        x: ee.x ?? 0,
+        y: ee.y ?? 0,
+        vx: ee.vx ?? 0,
+        vy: ee.vy ?? 0,
+        facingX: ee.facingX ?? 1,
+        facingY: ee.facingY ?? 0,
+        walkPhase: ee.walkPhase ?? 0,
+        attackTimer: ee.attackTimer ?? 0,
+        attackDuration: ee.attackDuration ?? 0,
+        hp: ee.hp ?? 0,
+        maxHp: ee.maxHp ?? 0,
+        hurtFlash: ee.hurtFlash ?? 0,
+      })
+    })
+  }
   return {
     lobbyCode: s.lobbyCode ?? '',
     phase: s.phase ?? 'lobby',
@@ -216,6 +277,7 @@ function stateToSnapshot(state: unknown): RoomSnapshot {
     waveAlive: s.waveAlive ?? 0,
     waveTotal: s.waveTotal ?? 0,
     players,
+    enemies,
   }
 }
 

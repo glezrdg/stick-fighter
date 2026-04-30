@@ -308,7 +308,12 @@ export const MainMenuOverlay: Component<MainMenuOverlayProps> = (props) => {
           persistName(displayName)
         }}
       />
-      <LobbyOverlay open={lobbyOpen} onClose={() => setLobbyOpen(false)} getSave={props.getSave} />
+      <LobbyOverlay
+        bus={props.bus}
+        open={lobbyOpen}
+        onClose={() => setLobbyOpen(false)}
+        getSave={props.getSave}
+      />
     </Show>
   )
 }

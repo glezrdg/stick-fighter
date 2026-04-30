@@ -1,11 +1,13 @@
 import type { SaveCurrent } from '@stick/shared'
-import { type Component, Show, createSignal, onCleanup } from 'solid-js'
+import { type EventBus } from '@stick/sim'
+import { type Component, Show, createEffect, createSignal, onCleanup } from 'solid-js'
 
 import { netClient, type RoomPlayer, type RoomSnapshot } from '../net/NetClient'
 import { NetClient } from '../net/NetClient'
 import { AuthStore } from '../platform/authStore'
 
 interface LobbyOverlayProps {
+  bus: EventBus
   open: () => boolean
   onClose: () => void
   getSave: () => SaveCurrent
@@ -29,6 +31,18 @@ export const LobbyOverlay: Component<LobbyOverlayProps> = (props) => {
   const off = netClient.subscribe((snap) => setSnapshot(snap))
   onCleanup(off)
 
+  // When the server flips phase=playing, leave the lobby modal mounted but
+  // hand off to NetArenaScene which renders the multiplayer arena from the
+  // same room state. We don't `netClient.leave()` here — the scene re-uses
+  // the live connection.
+  createEffect(() => {
+    const snap = snapshot()
+    if (snap?.phase === 'playing' && props.open()) {
+      props.onClose()
+      props.bus.emit('ui:menu:start-netarena', {})
+    }
+  })
+
   const playerName = (): string => {
     const auth = AuthStore.get()
     if (auth) return auth.user.displayName
@@ -43,8 +57,11 @@ export const LobbyOverlay: Component<LobbyOverlayProps> = (props) => {
   }
 
   const close = () => {
-    void netClient.leave()
-    setSnapshot(null)
+    // Only disconnect if we haven't already transitioned to gameplay.
+    if (snapshot()?.phase !== 'playing') {
+      void netClient.leave()
+      setSnapshot(null)
+    }
     reset()
     props.onClose()
   }

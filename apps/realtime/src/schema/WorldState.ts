@@ -17,11 +17,20 @@ export class PlayerState extends Schema {
   @type('uint8') slot = 0
   /** True once the client has confirmed it loaded the run + is ready. */
   @type('boolean') ready = false
-  /** Authoritative position (sim coords). */
+  /** Authoritative position + velocity (sim coords). */
   @type('float32') x = 0
   @type('float32') y = 0
   @type('float32') vx = 0
   @type('float32') vy = 0
+  @type('float32') facingX = 1
+  @type('float32') facingY = 0
+  @type('float32') walkPhase = 0
+  /** Combat state — for renderer-side attack animation. */
+  @type('string') attackKind = ''
+  @type('float32') attackTimer = 0
+  @type('float32') attackDuration = 0
+  @type('float32') attackDirX = 1
+  @type('float32') attackDirY = 0
   @type('uint16') hp = 100
   @type('uint16') maxHp = 100
 }
@@ -32,7 +41,15 @@ export class EnemyState extends Schema {
   @type('string') typeId = ''
   @type('float32') x = 0
   @type('float32') y = 0
+  @type('float32') vx = 0
+  @type('float32') vy = 0
+  @type('float32') facingX = 1
+  @type('float32') facingY = 0
+  @type('float32') walkPhase = 0
+  @type('float32') attackTimer = 0
+  @type('float32') attackDuration = 0
   @type('uint16') hp = 0
+  @type('uint16') maxHp = 0
   @type('float32') hurtFlash = 0
 }
 
