@@ -189,6 +189,16 @@ export class StickFightRoom extends Room<WorldState> {
       this.isLocked = true
       this.lock().catch(() => {})
     }
+
+    // Send the lobby info as a one-shot message — the schema's `lobbyCode`
+    // field doesn't always survive the round trip without shared schema
+    // classes on the client, so this is the reliable channel.
+    client.send('lobby:info', {
+      lobbyCode: this.state.lobbyCode,
+      sessionId: client.sessionId,
+      slot,
+    })
+
     console.info(
       `[stick_fight] ${client.sessionId} joined room ${this.roomId} (slot ${slot}, name=${auth.displayName})`,
     )

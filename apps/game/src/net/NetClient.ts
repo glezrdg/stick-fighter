@@ -89,6 +89,10 @@ export class NetClient {
   private room: Colyseus.Room | null = null
   private listeners = new Set<Listener>()
   private lastSnapshot: RoomSnapshot | null = null
+  /** Cached lobby code from the server's `lobby:info` message — survives
+   *  even when the schema's `lobbyCode` field doesn't deserialize on the
+   *  client (no shared @colyseus/schema classes). */
+  private cachedLobbyCode = ''
 
   /** Lazy-instantiate the Colyseus client. */
   private getClient(): Colyseus.Client {
@@ -189,23 +193,33 @@ export class NetClient {
    */
   private bindRoom(room: Colyseus.Room): RoomSnapshot {
     this.room = room
-    // `Room.metadata` is not in the typed API of colyseus.js but exists at
-    // runtime (set from the matchmake response). It's the canonical source
-    // of `lobbyCode` since it's available before the schema has synced.
-    const readLobbyCode = (): string | undefined =>
-      (room as unknown as { metadata?: { lobbyCode?: string } }).metadata?.lobbyCode
-    const initial = stateToSnapshot(room.state as unknown, readLobbyCode())
+    this.cachedLobbyCode = ''
+    const initial = stateToSnapshot(room.state as unknown, this.cachedLobbyCode)
     this.lastSnapshot = initial
-    // Fire listeners with the initial snapshot too — `onStateChange` may
-    // not replay the first state if it landed before we registered.
     this.notifyListeners(initial)
+
+    // The server sends a `lobby:info` message right after onJoin with the
+    // canonical lobby code. Cache it and re-broadcast a snapshot so the
+    // UI updates without waiting for the next state diff.
+    room.onMessage('lobby:info', (msg: unknown) => {
+      const m = msg as { lobbyCode?: string }
+      if (typeof m.lobbyCode === 'string' && m.lobbyCode.length > 0) {
+        this.cachedLobbyCode = m.lobbyCode
+        if (this.lastSnapshot) {
+          this.lastSnapshot = { ...this.lastSnapshot, lobbyCode: this.cachedLobbyCode }
+          this.notifyListeners(this.lastSnapshot)
+        }
+      }
+    })
+
     room.onStateChange((state: unknown) => {
-      this.lastSnapshot = stateToSnapshot(state, readLobbyCode())
+      this.lastSnapshot = stateToSnapshot(state, this.cachedLobbyCode)
       this.notifyListeners(this.lastSnapshot)
     })
     room.onLeave(() => {
       this.room = null
       this.lastSnapshot = null
+      this.cachedLobbyCode = ''
     })
     return initial
   }
