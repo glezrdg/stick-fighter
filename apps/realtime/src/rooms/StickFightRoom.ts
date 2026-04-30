@@ -17,6 +17,7 @@ import {
 } from '@stick/sim'
 import jwt from 'jsonwebtoken'
 
+import { registerLobby, unregisterLobby } from '../lobbyRegistry'
 import { EnemyState, PlayerState, WorldState } from '../schema/WorldState'
 
 /**
@@ -85,8 +86,9 @@ export class StickFightRoom extends Room<WorldState> {
     this.state.lobbyCode =
       fromHost && /^[A-Z2-9]{4}$/.test(fromHost) ? fromHost : generateLobbyCode()
 
-    // Make the room joinable by lobbyCode via matchmaker filter.
-    // Setting metadata is what `getAvailableRooms()` reads on the client.
+    // Self-register in the lobby map so /lobby/:code can find this room.
+    registerLobby(this.state.lobbyCode, this.roomId)
+    // Metadata kept too for tooling / debugging.
     this.setMetadata({ lobbyCode: this.state.lobbyCode })
 
     this.setSimulationInterval((dtMs) => this.tick(dtMs / 1000), 1000 / SIM_TICK_HZ)
@@ -231,6 +233,7 @@ export class StickFightRoom extends Room<WorldState> {
   }
 
   override onDispose(): void {
+    unregisterLobby(this.state.lobbyCode)
     console.info(`[stick_fight] room ${this.roomId} disposed`)
   }
 

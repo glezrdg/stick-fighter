@@ -1,10 +1,11 @@
 import { createServer } from 'node:http'
 
-import { Server, matchMaker } from '@colyseus/core'
+import { Server } from '@colyseus/core'
 import { WebSocketTransport } from '@colyseus/ws-transport'
 import cors from 'cors'
 import express from 'express'
 
+import { listLobbies, lookupLobby } from './lobbyRegistry'
 import { StickFightRoom } from './rooms/StickFightRoom'
 
 /**
@@ -66,45 +67,19 @@ async function main() {
    * can call `client.joinById(roomId)`. We use this instead of Colyseus's
    * `filterBy` because that didn't reliably match in 0.16 with options.
    */
-  app.get('/lobby/:code', async (req, res) => {
+  app.get('/lobby/:code', (req, res) => {
     const code = String(req.params.code ?? '').toUpperCase()
     if (!/^[A-Z2-9]{4}$/.test(code)) {
       return res.status(400).json({ error: 'invalid code format' })
     }
-    try {
-      const rooms = await matchMaker.query({ name: 'stick_fight' })
-      console.info(
-        `[realtime] /lobby/${code} — query returned ${rooms.length} rooms:`,
-        rooms.map((r) => ({ roomId: r.roomId, metadata: r.metadata, clients: r.clients })),
-      )
-      const match = rooms.find(
-        (r) => (r.metadata as { lobbyCode?: string } | null | undefined)?.lobbyCode === code,
-      )
-      if (!match) return res.status(404).json({ error: 'no room with that code' })
-      return res.json({ roomId: match.roomId, locked: match.locked, clients: match.clients })
-    } catch (err) {
-      console.error('[realtime] /lobby lookup failed:', err)
-      return res.status(500).json({ error: 'internal error' })
-    }
+    const roomId = lookupLobby(code)
+    if (!roomId) return res.status(404).json({ error: 'no room with that code' })
+    return res.json({ roomId })
   })
 
-  /** Debug — list all rooms (used to diagnose lobby lookup issues). */
-  app.get('/debug/rooms', async (_req, res) => {
-    try {
-      const rooms = await matchMaker.query({})
-      return res.json({
-        count: rooms.length,
-        rooms: rooms.map((r) => ({
-          roomId: r.roomId,
-          name: r.name,
-          clients: r.clients,
-          locked: r.locked,
-          metadata: r.metadata,
-        })),
-      })
-    } catch (err) {
-      return res.status(500).json({ error: String(err) })
-    }
+  /** Debug — list all known lobbies. */
+  app.get('/debug/rooms', (_req, res) => {
+    res.json({ lobbies: listLobbies() })
   })
 
   const httpServer = createServer(app)
