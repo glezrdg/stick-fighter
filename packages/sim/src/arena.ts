@@ -9,7 +9,7 @@ export const ARENA = {
   playerInsetBottom: 40,
 } as const
 
-/** Camera zoom. The legacy used 1.6, but our viewport is taller (540×960
- *  vs the legacy ~640×640) so the perceived size of actors is smaller.
- *  Bumped to 2.0 so stickmen read at roughly the legacy size on screen. */
-export const CAM_ZOOM = 2.0
+/** Camera zoom. The legacy used 1.6 with a ~640×640 viewport; ours is taller
+ *  (540×960) so we need a touch more zoom to keep actors readable. 1.8 is
+ *  the sweet spot — closer than legacy without choking the play area. */
+export const CAM_ZOOM = 1.8

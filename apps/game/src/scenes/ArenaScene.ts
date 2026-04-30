@@ -814,6 +814,24 @@ export class ArenaScene extends BaseScene {
         },
         type.scale,
       )
+      // HP bar — only when wounded, drawn after the stickman so it sits on
+      // top. Drawn into the same Graphics (already cleared by stickman.draw
+      // and now extended).
+      if (e.hp > 0 && e.hp < e.maxHp) {
+        const barW = 36 * type.scale
+        const barH = 4
+        const barY = -68 * type.scale
+        const pct = Math.max(0, Math.min(1, e.hp / e.maxHp))
+        // Background.
+        g.fillStyle(0x000000, 0.7)
+        g.fillRect(-barW / 2, barY, barW, barH)
+        // Fill.
+        g.fillStyle(0xff5050, 1)
+        g.fillRect(-barW / 2, barY, barW * pct, barH)
+        // Outline.
+        g.lineStyle(1, 0x000000, 0.8)
+        g.strokeRect(-barW / 2, barY, barW, barH)
+      }
     }
     for (const [id, g] of this.enemyGraphics) {
       if (!seen.has(id)) {
