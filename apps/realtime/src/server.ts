@@ -5,7 +5,7 @@ import { WebSocketTransport } from '@colyseus/ws-transport'
 import cors from 'cors'
 import express from 'express'
 
-import { listLobbies, lookupLobby } from './lobbyRegistry'
+import { listLobbies, lookupLobby, registryStats } from './lobbyRegistry'
 import { StickFightRoom } from './rooms/StickFightRoom'
 
 /**
@@ -77,9 +77,14 @@ async function main() {
     return res.json({ roomId })
   })
 
-  /** Debug — list all known lobbies. */
+  /** Debug — registry state + counters. */
   app.get('/debug/rooms', (_req, res) => {
-    res.json({ lobbies: listLobbies() })
+    res.json({
+      lobbies: listLobbies(),
+      stats: registryStats(),
+      uptimeSec: process.uptime(),
+      pid: process.pid,
+    })
   })
 
   const httpServer = createServer(app)

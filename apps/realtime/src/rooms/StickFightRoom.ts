@@ -78,6 +78,9 @@ export class StickFightRoom extends Room<WorldState> {
   private readonly enemySchemaIndex = new Map<string, EnemyState>()
 
   override onCreate(options?: { lobbyCode?: string }): void {
+    console.info(
+      `[stick_fight] onCreate START — roomId=${this.roomId} options=${JSON.stringify(options)}`,
+    )
     // Prefer the lobbyCode the host generated client-side and passed via
     // create options — this is what makes `filterBy(['lobbyCode'])` route
     // friends to this exact room. Fall back to server-generated for
@@ -85,6 +88,7 @@ export class StickFightRoom extends Room<WorldState> {
     const fromHost = options?.lobbyCode?.toUpperCase()
     this.state.lobbyCode =
       fromHost && /^[A-Z2-9]{4}$/.test(fromHost) ? fromHost : generateLobbyCode()
+    console.info(`[stick_fight] onCreate — lobbyCode=${this.state.lobbyCode}`)
 
     // Self-register in the lobby map so /lobby/:code can find this room.
     registerLobby(this.state.lobbyCode, this.roomId)

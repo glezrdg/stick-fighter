@@ -8,10 +8,28 @@
  */
 
 const codeToRoomId = new Map<string, string>()
+let totalRegistrations = 0
+let lastRegisteredAt: string | null = null
 
 export function registerLobby(code: string, roomId: string): void {
   codeToRoomId.set(code.toUpperCase(), roomId)
-  console.info(`[lobby] register ${code} → ${roomId} (now tracking ${codeToRoomId.size})`)
+  totalRegistrations += 1
+  lastRegisteredAt = new Date().toISOString()
+  console.info(
+    `[lobby] register code=${code} roomId=${roomId} totalRegs=${totalRegistrations} now=${codeToRoomId.size}`,
+  )
+}
+
+export function registryStats(): {
+  active: number
+  totalRegistrations: number
+  lastRegisteredAt: string | null
+} {
+  return {
+    active: codeToRoomId.size,
+    totalRegistrations,
+    lastRegisteredAt,
+  }
 }
 
 export function unregisterLobby(code: string): void {
