@@ -27,6 +27,7 @@ COPY packages/sim ./packages/sim
 COPY packages/content ./packages/content
 COPY apps/realtime ./apps/realtime
 RUN pnpm --filter @stick/shared build
+RUN pnpm --filter @stick/content build
 RUN pnpm --filter @stick/sim build
 RUN pnpm --filter @stick/realtime build
 
