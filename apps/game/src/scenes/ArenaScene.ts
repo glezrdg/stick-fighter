@@ -22,9 +22,6 @@ import {
   type Projectile,
   ProjectileSystem,
   type RunState,
-  SWORD_TORNADO_DMG_MUL,
-  SWORD_TORNADO_RADIUS,
-  SWORD_TORNADO_TICK_SEC,
   SkillSystem,
   VAMPIRE_HEAL_PER_KILL,
   WaveBuffSystem,
@@ -32,9 +29,8 @@ import {
   createPlayer,
   createRunState,
   requestHitStop,
-  tickHitStop,
+  tickArena,
   timeSeed,
-  updateMovement,
 } from '@stick/sim'
 
 import { dtFromPhaser } from '../app/time'
@@ -96,13 +92,10 @@ export class ArenaScene extends BaseScene {
   private deathFxGraphics!: Phaser.GameObjects.Graphics
   private auraGraphics!: Phaser.GameObjects.Graphics
 
-  private tornadoTickAcc = 0
   private busUnsubs: Array<() => void> = []
   private activePopups = 0
-  /** Wall-clock seconds since the last hit-stop landed. Used to throttle
-   *  freeze frames so AOE / fast combos don't turn the game into slideshow. */
-  private hitStopCooldown = 0
-  /** Reusable scratch buffer for the pure hitStop helpers (avoid per-frame allocs). */
+  /** Reusable scratch buffer for `requestHitStop()` (the only hit-stop API
+   *  still called from outside the sim — `tickArena()` does its own decay). */
   private readonly hitStopState = { hitStop: 0, cooldown: 0 }
   private loadout!: RunLoadout
   private lastAliveCount = -1
@@ -292,55 +285,32 @@ export class ArenaScene extends BaseScene {
     if (this.runState.paused) return
     this.runState.elapsed += realDt
 
-    // Hit-stop decays on REAL dt; the helper also drains the throttle window
-    // so AOE / over-buffed players can't stack freezes into a slideshow.
-    this.hitStopState.hitStop = this.runState.hitStop
-    this.hitStopState.cooldown = this.hitStopCooldown
-    tickHitStop(this.hitStopState, realDt)
-    this.runState.hitStop = this.hitStopState.hitStop
-    this.hitStopCooldown = this.hitStopState.cooldown
-    // Decay slow-mo on REAL dt; scale gameplay dt while active (legacy 1318: 0.4×).
-    if (this.runState.slowMo > 0) {
-      this.runState.slowMo = Math.max(0, this.runState.slowMo - realDt)
-    }
-    const dt = this.runState.hitStop > 0 ? 0 : this.runState.slowMo > 0 ? realDt * 0.4 : realDt
+    // ---- Sim tick (deterministic core) -----------------------------------
+    // tickArena() owns: hit-stop/slow-mo decay, effective dt, tornado AOE,
+    // movement, combat, skills, regen, enemy AI, projectiles, waves,
+    // obstacles + collisions. Mutates runState/player/system internals and
+    // emits sync-safe events on the bus.
+    const moveVec = this.services.input.getMoveVector()
+    const { dt } = tickArena(this.runState, { p1: { dx: moveVec.x, dy: moveVec.y } }, realDt, {
+      bus: this.bus,
+      rng: this.rng,
+      combat: this.combat,
+      skills: this.skillSystem,
+      enemies: this.enemySys,
+      projectiles: this.projectiles,
+      waves: this.waves,
+      obstacles: this.obstacleSys,
+      player: this.player,
+      stats: { regenPerSec: this.stats.regenPerSec, dmgMul: this.stats.dmgMul },
+      enemyRadius: (typeId) => 16 * (getEnemyType(typeId).scale || 1),
+    })
 
-    // Decay other run-state timers on the (possibly slowed) dt.
+    // ---- Client-only tick (cosmetic, camera, HUD) ------------------------
+    // Camera shake decay is purely visual.
     if (this.runState.cameraShake > 0) {
       this.runState.cameraShake = Math.max(0, this.runState.cameraShake - dt)
     }
-    if (this.runState.tornadoTimer > 0) {
-      this.runState.tornadoTimer = Math.max(0, this.runState.tornadoTimer - dt)
-      this.tickTornado(dt)
-    } else {
-      this.tornadoTickAcc = 0
-    }
-
-    // Player tick.
-    const moveVec = this.services.input.getMoveVector()
-    updateMovement(this.player, moveVec, dt)
-    this.combat.update(this.player, dt)
-    this.skillSystem.update(this.runState, dt)
-
-    // Regen passive (runBuffs.regen).
-    if (this.stats.regenPerSec > 0 && this.player.hp > 0 && this.player.hp < this.player.maxHp) {
-      this.player.regenAcc += this.stats.regenPerSec * dt
-      if (this.player.regenAcc >= 1) {
-        const heal = Math.floor(this.player.regenAcc)
-        this.player.hp = Math.min(this.player.maxHp, this.player.hp + heal)
-        this.player.regenAcc -= heal
-        this.bus.emit('player:hp:changed', { hp: this.player.hp, maxHp: this.player.maxHp })
-      }
-    }
-
-    // Enemy + projectile tick + waves + gore + obstacles.
-    const enemies = this.waves.getEnemies()
-    this.enemySys.update(enemies, this.player, dt)
-    this.projectiles.update(this.player, dt)
-    this.waves.update(dt)
-    this.waves.reapDead()
     this.gore.update(dt)
-    this.obstacleSys.update(dt)
     this.particles.update(dt)
     this.deathFx.update(dt)
     ArenaPropsRenderer.update(this.arenaProps, dt, (lo, hi) => this.rng.float(lo, hi))
@@ -364,11 +334,6 @@ export class ArenaScene extends BaseScene {
       this.bus.emit('wave:enemies:changed', { alive, total: this.currentWaveTotal })
     }
 
-    // Player & enemy collision against obstacles.
-    this.obstacleSys.applyPlayerCollision(this.player)
-    for (const e of enemies)
-      this.obstacleSys.applyCollision(e, 16 * (getEnemyType(e.typeId).scale || 1))
-
     // Camera look-ahead: nudge the camera ~36px toward the player's heading,
     // smoothed exponentially so it tracks but doesn't twitch on direction
     // changes. setFollowOffset uses an inverted sign (negative offset shifts
@@ -385,6 +350,7 @@ export class ArenaScene extends BaseScene {
     }
 
     // Render.
+    const enemies = this.waves.getEnemies()
     this.arenaPropsGraphics.clear()
     ArenaPropsRenderer.drawFloor(this.arenaPropsGraphics, this.arenaProps)
     this.renderGore()
@@ -440,33 +406,6 @@ export class ArenaScene extends BaseScene {
         dmgMul: this.stats.dmgMul,
       },
     })
-  }
-
-  private tickTornado(dt: number): void {
-    this.tornadoTickAcc += dt
-    while (this.tornadoTickAcc >= SWORD_TORNADO_TICK_SEC) {
-      this.tornadoTickAcc -= SWORD_TORNADO_TICK_SEC
-      const enemies = this.waves.getEnemies()
-      const damage = this.stats.dmgMul * SWORD_TORNADO_DMG_MUL
-      for (const e of enemies) {
-        if (e.hp <= 0) continue
-        const dx = e.x - this.player.x
-        const dy = e.y - this.player.y
-        if (Math.hypot(dx, dy) > SWORD_TORNADO_RADIUS) continue
-        const wasAlive = e.hp > 0
-        e.hp -= damage
-        e.hurtFlash = 0.12
-        this.bus.emit('combat:hit', {
-          attackerId: 'player',
-          targetId: e.id,
-          dmg: damage,
-          crit: false,
-        })
-        if (wasAlive && e.hp <= 0) {
-          this.bus.emit('enemy:death', { enemyId: e.id, byPlayer: true })
-        }
-      }
-    }
   }
 
   private onWaveComplete(wave: number): void {
@@ -597,10 +536,10 @@ export class ArenaScene extends BaseScene {
    */
   private requestHitStop(duration: number): void {
     this.hitStopState.hitStop = this.runState.hitStop
-    this.hitStopState.cooldown = this.hitStopCooldown
+    this.hitStopState.cooldown = this.runState.hitStopCooldown
     if (requestHitStop(this.hitStopState, duration)) {
       this.runState.hitStop = this.hitStopState.hitStop
-      this.hitStopCooldown = this.hitStopState.cooldown
+      this.runState.hitStopCooldown = this.hitStopState.cooldown
     }
   }
 
