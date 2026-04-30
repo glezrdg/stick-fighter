@@ -1,3 +1,5 @@
+import '../polyfill'
+
 import { ArraySchema, MapSchema, Schema, defineTypes } from '@colyseus/schema'
 
 /**
