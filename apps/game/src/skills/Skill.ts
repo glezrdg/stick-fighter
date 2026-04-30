@@ -3,56 +3,58 @@ import type Phaser from 'phaser'
 
 import type { EventBus } from '../app/eventBus'
 import type { RunState } from '../core/runState'
+import type { Enemy } from '../entities/Enemy'
+import type { Player } from '../entities/Player'
 
 /**
  * Context handed to a Skill's `execute()`. Concrete skills receive everything
- * they may need (run state, bus, RNG, the active scene for tweens) without
- * reaching for globals.
+ * they may need (player, run state, bus, RNG, the active scene for tweens)
+ * without reaching for globals.
  */
 export interface SkillContext {
-  runState: RunState
+  player: Player
+  /** Live enemies in the current run. Skills that hit/AOE iterate this. */
+  enemies: readonly Enemy[]
   bus: EventBus
   rng: Rng
   /** Active scene — used for tweens, particles, camera shake. */
   scene: Phaser.Scene
+  /** Per-run mutable state (camera shake, slowMo, tornado timer, etc). */
+  runState: RunState
+  /** Damage multiplier from BuffSystem (weapon + skills + run buffs). */
+  dmgMul: number
 }
 
 /**
- * Passive bonuses contributed by owned passive skills. The BuffSystem
- * collects modifiers from every owned passive and exposes the combined
- * value (replaces the legacy `dmgMult()` / `goldMult()` / `maxHP()` helpers).
- *
- * Multipliers are *cumulative* (multiplied together). Adders are summed.
+ * Passive bonuses contributed by owned passive skills. Aggregated into
+ * EffectiveStats by BuffSystem (replaces legacy `dmgMult()` / `goldMult()`
+ * / `maxHP()` helpers). For F2.1 we read the modifiers directly from the
+ * skill registry instead of from this field — kept here for forward
+ * compatibility with content-driven balance tweaks in F2.3.
  */
 export interface PassiveModifiers {
-  /** e.g. 1.10 = +10% damage. Default 1. */
   dmgMul?: number
-  /** Flat HP added on top of base maxHP. Default 0. */
   hpMaxAdd?: number
-  /** e.g. 1.5 = +50% gold. Default 1. */
   goldMul?: number
-  /** e.g. 0.75 = 25% cooldown reduction. Default 1. */
   cdReduceMul?: number
-  /** Flat HP/sec regen. Default 0. */
   regenPerSec?: number
 }
 
 /**
  * Skill definition. A skill is either:
  *   - **active**: triggered by the player (Q/E), goes on cooldown, runs `execute()`.
- *   - **passive**: just owned; contributes `modifiers` to the BuffSystem.
- *
- * Each skill lives in its own file under `skills/`. The file imports the
- * shared `register()` from the registry as a side-effect to make itself
- * available — see `skills/Dash.ts` for the pattern.
+ *   - **passive**: just owned; contributes to the BuffSystem and/or hooks bus events.
  */
 export interface Skill {
   readonly id: string
   readonly kind: 'active' | 'passive'
   readonly name: string
   readonly desc: string
-  /** Single-character / emoji icon for HUD. */
   readonly icon?: string
+  /** Cost in gold to buy in the shop. 0 = free / starter. */
+  readonly cost: number
+  /** Premium = paid with gems instead of gold. */
+  readonly premium?: boolean
 
   // --- active-only ---------------------------------------------------
   /** Base cooldown in seconds. Required for active skills. */

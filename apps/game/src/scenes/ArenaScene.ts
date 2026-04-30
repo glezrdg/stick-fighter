@@ -9,31 +9,51 @@ import { type RunState, createRunState } from '../core/runState'
 import type { Enemy } from '../entities/Enemy'
 import { type Player, createPlayer } from '../entities/Player'
 import { StickmanRenderer } from '../render/StickmanRenderer'
+// Side-effect: register every skill.
+import '../skills'
+import {
+  SWORD_TORNADO_DMG_MUL,
+  SWORD_TORNADO_RADIUS,
+  SWORD_TORNADO_TICK_SEC,
+} from '../skills/SwordTornado'
+import { VAMPIRE_HEAL_PER_KILL } from '../skills/Vampire'
+import { type EffectiveStats, BuffSystem } from '../systems/BuffSystem'
 import { CombatSystem } from '../systems/CombatSystem'
 import { EnemySystem } from '../systems/EnemySystem'
 import { updateMovement } from '../systems/MovementSystem'
+import { SkillSystem } from '../systems/SkillSystem'
 import { WaveSystem } from '../systems/WaveSystem'
 
 import { BaseScene } from './BaseScene'
 
 /**
- * Gameplay scene. F1.4 closes Phase 1: player movement, combo with hit
- * detection, grunt enemies via meleeChase, wave spawner. After a wave
- * clears another starts automatically (testing infinite scaling lands in F2).
+ * F2.1 loadout — what the run starts with. F2.4 reads this from SaveStore
+ * (with the shop wired in). Hard-coding here for now keeps the deployed
+ * preview useful so we can verify the SkillSystem end-to-end.
  */
+const F2_1_TEST_LOADOUT = {
+  ownedSkills: ['dash', 'kiBlast', 'shield', 'vampire', 'golden', 'cdReduce', 'heal'],
+  equipped: ['kiBlast', 'dash'] as [string, string],
+  weaponId: 'katana',
+  weaponLevel: 1,
+}
+
 export class ArenaScene extends BaseScene {
   static readonly KEY = 'Arena'
 
   private runState!: RunState
   private player!: Player
+  private stats!: EffectiveStats
   private combat!: CombatSystem
   private waves!: WaveSystem
   private enemySys!: EnemySystem
+  private skillSystem!: SkillSystem
   private stickman!: StickmanRenderer
 
   private playerGraphics!: Phaser.GameObjects.Graphics
   private enemyGraphics = new Map<string, Phaser.GameObjects.Graphics>()
 
+  private tornadoTickAcc = 0
   private busUnsubs: Array<() => void> = []
 
   constructor(services: ConstructorParameters<typeof BaseScene>[1]) {
@@ -41,9 +61,21 @@ export class ArenaScene extends BaseScene {
   }
 
   create(): void {
+    // ---- Effective stats (BuffSystem) ----
+    this.stats = BuffSystem.computeStats({
+      ownedSkills: F2_1_TEST_LOADOUT.ownedSkills,
+      runBuffs: { dmg: 0, atkSpeed: 0, hpMax: 0, crit: 0, knockback: 0, regen: 0, gold: 0 },
+      equippedWeaponId: F2_1_TEST_LOADOUT.weaponId,
+      weaponLevel: F2_1_TEST_LOADOUT.weaponLevel,
+    })
+
     // ---- Run state + player ----
-    this.runState = createRunState({ seed: timeSeed(), playerMaxHp: 100 })
-    this.player = createPlayer({ x: ARENA.width / 2, y: ARENA.height / 2 })
+    this.runState = createRunState({ seed: timeSeed(), playerMaxHp: this.stats.maxHp })
+    this.player = createPlayer({
+      x: ARENA.width / 2,
+      y: ARENA.height / 2,
+      maxHp: this.stats.maxHp,
+    })
 
     // ---- Systems ----
     this.waves = new WaveSystem({ bus: this.bus, rng: this.rng })
@@ -51,8 +83,10 @@ export class ArenaScene extends BaseScene {
       bus: this.bus,
       attackPatterns,
       getEnemies: () => this.waves.getEnemies(),
+      getDmgMul: () => this.stats.dmgMul,
     })
     this.enemySys = new EnemySystem({ bus: this.bus, rng: this.rng })
+    this.skillSystem = new SkillSystem({ bus: this.bus })
     this.stickman = new StickmanRenderer()
 
     // ---- Arena visuals ----
@@ -75,21 +109,8 @@ export class ArenaScene extends BaseScene {
     // ---- Bus wiring ----
     this.busUnsubs.push(
       this.bus.on('input:attack', () => this.combat.tryAttack(this.player)),
-      this.bus.on('input:skill', ({ slot }) => {
-        // F2 wires SkillSystem; for now broadcast so audio/HUD can react.
-        this.bus.emit('skill:cast', { skillId: 'placeholder', slot })
-      }),
-      this.bus.on('enemy:death', ({ enemyId, byPlayer }) => {
-        if (!byPlayer) return
-        // Lookup enemy to get its goldReward, then bookkeep run totals.
-        const enemy = this.waves.getEnemies().find((e) => e.id === enemyId)
-        if (!enemy) return
-        const type = getEnemyType(enemy.typeId)
-        this.runState.gold += type.goldReward
-        this.runState.kills += 1
-        this.bus.emit('gold:changed', { gold: this.runState.gold, delta: type.goldReward })
-        this.bus.emit('kills:changed', { kills: this.runState.kills })
-      }),
+      this.bus.on('input:skill', ({ slot }) => this.castSkill(slot)),
+      this.bus.on('enemy:death', ({ enemyId, byPlayer }) => this.onEnemyDeath(enemyId, byPlayer)),
       this.bus.on('wave:start', ({ wave }) => {
         this.runState.wave = wave
       }),
@@ -98,12 +119,15 @@ export class ArenaScene extends BaseScene {
 
     this.input.keyboard?.on('keydown-ESC', () => this.endRun('quit'))
 
-    // Initial HUD population.
+    // ---- Initial HUD population ----
     this.bus.emit('run:start', { seed: this.runState.seed })
     this.bus.emit('gold:changed', { gold: this.runState.gold, delta: 0 })
     this.bus.emit('player:hp:changed', { hp: this.player.hp, maxHp: this.player.maxHp })
+    this.bus.emit('skills:equipped', {
+      slot0: F2_1_TEST_LOADOUT.equipped[0] ?? null,
+      slot1: F2_1_TEST_LOADOUT.equipped[1] ?? null,
+    })
 
-    // Kick off wave 1.
     this.waves.startNextWave()
 
     this.events.once('shutdown', () => this.cleanup())
@@ -114,12 +138,38 @@ export class ArenaScene extends BaseScene {
     const dt = dtFromPhaser(deltaMs)
     this.runState.elapsed += dt
 
+    // Decay run-state timers.
+    if (this.runState.cameraShake > 0) {
+      this.runState.cameraShake = Math.max(0, this.runState.cameraShake - dt)
+    }
+    if (this.runState.slowMo > 0) {
+      this.runState.slowMo = Math.max(0, this.runState.slowMo - dt)
+    }
+    if (this.runState.tornadoTimer > 0) {
+      this.runState.tornadoTimer = Math.max(0, this.runState.tornadoTimer - dt)
+      this.tickTornado(dt)
+    } else {
+      this.tornadoTickAcc = 0
+    }
+
     // Player tick.
     const moveVec = this.services.input.getMoveVector()
     updateMovement(this.player, moveVec, dt)
     this.combat.update(this.player, dt)
+    this.skillSystem.update(this.runState, dt)
 
-    // Enemy tick + wave bookkeeping.
+    // Regen passive (runBuffs.regen).
+    if (this.stats.regenPerSec > 0 && this.player.hp > 0 && this.player.hp < this.player.maxHp) {
+      this.player.regenAcc += this.stats.regenPerSec * dt
+      if (this.player.regenAcc >= 1) {
+        const heal = Math.floor(this.player.regenAcc)
+        this.player.hp = Math.min(this.player.maxHp, this.player.hp + heal)
+        this.player.regenAcc -= heal
+        this.bus.emit('player:hp:changed', { hp: this.player.hp, maxHp: this.player.maxHp })
+      }
+    }
+
+    // Enemy tick + waves.
     const enemies = this.waves.getEnemies()
     this.enemySys.update(enemies, this.player, dt)
     this.waves.update(dt)
@@ -129,6 +179,78 @@ export class ArenaScene extends BaseScene {
     this.playerGraphics.setPosition(this.player.x, this.player.y)
     this.stickman.draw(this.playerGraphics, this.player)
     this.renderEnemies(enemies)
+
+    // Camera shake.
+    if (this.runState.cameraShake > 0) {
+      this.cameras.main.shake(50, 0.005 * Math.min(1, this.runState.cameraShake / 0.5))
+    }
+  }
+
+  private castSkill(slot: 0 | 1): void {
+    const skillId = F2_1_TEST_LOADOUT.equipped[slot]
+    this.skillSystem.cast({
+      slot,
+      skillId,
+      cdMul: this.stats.cdMul,
+      ctx: {
+        player: this.player,
+        enemies: this.waves.getEnemies(),
+        bus: this.bus,
+        rng: this.rng,
+        scene: this,
+        runState: this.runState,
+        dmgMul: this.stats.dmgMul,
+      },
+    })
+  }
+
+  private tickTornado(dt: number): void {
+    this.tornadoTickAcc += dt
+    while (this.tornadoTickAcc >= SWORD_TORNADO_TICK_SEC) {
+      this.tornadoTickAcc -= SWORD_TORNADO_TICK_SEC
+      const enemies = this.waves.getEnemies()
+      const damage = this.stats.dmgMul * SWORD_TORNADO_DMG_MUL
+      for (const e of enemies) {
+        if (e.hp <= 0) continue
+        const dx = e.x - this.player.x
+        const dy = e.y - this.player.y
+        if (Math.hypot(dx, dy) > SWORD_TORNADO_RADIUS) continue
+        const wasAlive = e.hp > 0
+        e.hp -= damage
+        e.hurtFlash = 0.12
+        this.bus.emit('combat:hit', {
+          attackerId: 'player',
+          targetId: e.id,
+          dmg: damage,
+          crit: false,
+        })
+        if (wasAlive && e.hp <= 0) {
+          this.bus.emit('enemy:death', { enemyId: e.id, byPlayer: true })
+        }
+      }
+    }
+  }
+
+  private onEnemyDeath(enemyId: string, byPlayer: boolean): void {
+    if (!byPlayer) return
+    const enemy = this.waves.getEnemies().find((e) => e.id === enemyId)
+    if (!enemy) return
+    const type = getEnemyType(enemy.typeId)
+    const goldGain = Math.floor(type.goldReward * this.stats.goldMul)
+    this.runState.gold += goldGain
+    this.runState.kills += 1
+    this.bus.emit('gold:changed', { gold: this.runState.gold, delta: goldGain })
+    this.bus.emit('kills:changed', { kills: this.runState.kills })
+
+    // Vampire passive.
+    if (
+      F2_1_TEST_LOADOUT.ownedSkills.includes('vampire') &&
+      this.player.hp > 0 &&
+      this.player.hp < this.player.maxHp
+    ) {
+      this.player.hp = Math.min(this.player.maxHp, this.player.hp + VAMPIRE_HEAL_PER_KILL)
+      this.bus.emit('player:hp:changed', { hp: this.player.hp, maxHp: this.player.maxHp })
+    }
   }
 
   private renderEnemies(enemies: readonly Enemy[]): void {
@@ -162,7 +284,6 @@ export class ArenaScene extends BaseScene {
         type.scale,
       )
     }
-    // Drop graphics for enemies that died/disappeared.
     for (const [id, g] of this.enemyGraphics) {
       if (!seen.has(id)) {
         g.destroy()

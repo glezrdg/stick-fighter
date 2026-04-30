@@ -1,0 +1,7 @@
+[
+  { "id": "yellow", "name": "AURA DORADA", "color": "#ffd54a", "cost": 0, "premium": false },
+  { "id": "red", "name": "AURA SANGRE", "color": "#ff3030", "cost": 150, "premium": false },
+  { "id": "blue", "name": "AURA HIELO", "color": "#1ae0ff", "cost": 250, "premium": false },
+  { "id": "purple", "name": "AURA OSCURA", "color": "#9c27b0", "cost": 15, "premium": true },
+  { "id": "rainbow", "name": "AURA PRISMA", "color": "rainbow", "cost": 30, "premium": true }
+]

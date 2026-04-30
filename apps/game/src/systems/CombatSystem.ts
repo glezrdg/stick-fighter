@@ -11,8 +11,6 @@ export const COMBO_RESET_SEC = 1.5
 const LUNGE_PX_PER_FRAME = 2.5
 /** Cone half-angle for melee hits: dot(attackDir, toEnemy) > this connects. */
 const HIT_CONE_DOT_THRESHOLD = 0.3
-/** Base damage before pattern multipliers and weapon damage (F2 plugs in weapons). */
-const BASE_PLAYER_DAMAGE = 1
 /** Hurt flash duration applied to enemies on hit (seconds). */
 const ENEMY_HURT_FLASH_SEC = 0.12
 
@@ -33,6 +31,9 @@ export interface CombatSystemOptions {
   attackPatterns: AttackPatterns
   /** Returns the live enemies (used for both auto-aim and hit resolution). */
   getEnemies?: () => Iterable<EnemyTarget>
+  /** Returns the current effective damage multiplier from BuffSystem.
+   *  Defaults to 1 if not provided. */
+  getDmgMul?: () => number
 }
 
 /**
@@ -46,11 +47,13 @@ export class CombatSystem {
   private readonly bus: EventBus
   private readonly attackPatterns: AttackPatterns
   private readonly getEnemies: (() => Iterable<EnemyTarget>) | undefined
+  private readonly getDmgMul: () => number
 
   constructor(opts: CombatSystemOptions) {
     this.bus = opts.bus
     this.attackPatterns = opts.attackPatterns
     this.getEnemies = opts.getEnemies
+    this.getDmgMul = opts.getDmgMul ?? (() => 1)
   }
 
   /** Tick timers: counts the active attack down, resets the combo step on idle. */
@@ -107,7 +110,7 @@ export class CombatSystem {
     const enemies = this.getEnemies?.()
     if (!enemies) return
 
-    const dmg = BASE_PLAYER_DAMAGE * pattern.dmgMul
+    const dmg = this.getDmgMul() * pattern.dmgMul
     for (const e of enemies) {
       if (e.hp <= 0) continue
       const dx = e.x - player.x

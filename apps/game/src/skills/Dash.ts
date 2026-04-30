@@ -1,20 +1,22 @@
 import { register } from './registry'
 import type { Skill } from './Skill'
 
-/**
- * First skill ported. F1.2 just registers it; F1.3 (Player entity) plugs in
- * the actual displacement effect inside `execute()`.
- */
+/** Dash duration (seconds). Legacy: 22 frames @ 60fps ≈ 0.367s. */
+const DASH_DURATION_SEC = 0.37
+/** Player invulnerability while dashing. Legacy: 90 frames @ 60fps = 1.5s. */
+const DASH_IFRAMES_SEC = 1.5
+
 export const Dash: Skill = {
   id: 'dash',
   kind: 'active',
-  name: 'Dash',
-  desc: 'Sprint corto en la dirección de movimiento.',
+  name: 'DASH FANTASMA',
+  desc: 'Esquiva 1.5 seg + atraviesa enemigos',
   icon: '💨',
-  baseCooldown: 4,
-  execute(_ctx) {
-    // F1.3: propel player in facing direction (~180px over ~140ms with iframes).
-    // For now SkillSystem still emits 'skill:cast' so HUD/audio can react.
+  cost: 300,
+  baseCooldown: 8, // legacy 480 frames / 60
+  execute(ctx) {
+    ctx.player.dashTimer = DASH_DURATION_SEC
+    ctx.player.iframes = Math.max(ctx.player.iframes, DASH_IFRAMES_SEC)
   },
 }
 

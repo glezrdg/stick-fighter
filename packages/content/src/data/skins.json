@@ -1,0 +1,130 @@
+[
+  {
+    "id": "default",
+    "name": "STICKMAN",
+    "color": "#000000",
+    "clothing": "tunic",
+    "accessory": "none",
+    "cost": 0,
+    "premium": false
+  },
+  {
+    "id": "ninja",
+    "name": "NINJA",
+    "color": "#1a1a1a",
+    "clothing": "wrap",
+    "accessory": "headband",
+    "cost": 200,
+    "premium": false
+  },
+  {
+    "id": "monk",
+    "name": "MONJE",
+    "color": "#e0e0e0",
+    "clothing": "robe",
+    "accessory": "topknot",
+    "cost": 350,
+    "premium": false
+  },
+  {
+    "id": "samurai",
+    "name": "SAMURAI",
+    "color": "#3a1a1a",
+    "clothing": "samurai",
+    "accessory": "horns",
+    "cost": 600,
+    "premium": false
+  },
+  {
+    "id": "greenSamurai",
+    "name": "SAMURAI VERDE",
+    "color": "#5dd068",
+    "legColor": "#1a1a1a",
+    "clothing": "samurai",
+    "clothingColor": "#6020c8",
+    "accessory": "goldenHelm",
+    "cost": 800,
+    "premium": false
+  },
+  {
+    "id": "bambooMonk",
+    "name": "MONJE BAMBÚ",
+    "color": "#5dd068",
+    "clothing": "tunic",
+    "clothingColor": "#6020c8",
+    "accessory": "coneHat",
+    "cost": 1200,
+    "premium": false
+  },
+  {
+    "id": "iceKing",
+    "name": "REY DEL HIELO",
+    "color": "#f0f0f0",
+    "legColor": "#2030a0",
+    "clothing": "robe",
+    "clothingColor": "#fafafa",
+    "accessory": "iceCrown",
+    "cost": 1500,
+    "premium": false
+  },
+  {
+    "id": "knight",
+    "name": "CABALLERO ALADO",
+    "color": "#f0f0f0",
+    "clothing": "plate",
+    "clothingColor": "#e8e8e8",
+    "accessory": "wingedHelm",
+    "cost": 2000,
+    "premium": false
+  },
+  {
+    "id": "jester",
+    "name": "BUFÓN",
+    "color": "#f0f0f0",
+    "armColor": "#c41a1a",
+    "legColor": "#1a1a1a",
+    "clothing": "tunic",
+    "clothingColor": "#fafafa",
+    "accessory": "jesterCrown",
+    "cost": 30,
+    "premium": true
+  },
+  {
+    "id": "cyberpunk",
+    "name": "CYBER PUNK",
+    "color": "#1a1a1a",
+    "legColor": "#c41a1a",
+    "clothing": "tank",
+    "clothingColor": "#1a1a1a",
+    "accessory": "goggles",
+    "cost": 50,
+    "premium": true
+  },
+  {
+    "id": "demon",
+    "name": "DEMONIO",
+    "color": "#c41a1a",
+    "clothing": "tank",
+    "accessory": "demon",
+    "cost": 25,
+    "premium": true
+  },
+  {
+    "id": "robot",
+    "name": "ROBOT",
+    "color": "#5a6068",
+    "clothing": "plate",
+    "accessory": "antenna",
+    "cost": 40,
+    "premium": true
+  },
+  {
+    "id": "shadow",
+    "name": "SOMBRA",
+    "color": "#1a0a2a",
+    "clothing": "cloak",
+    "accessory": "wings",
+    "cost": 60,
+    "premium": true
+  }
+]

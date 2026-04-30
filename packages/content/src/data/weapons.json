@@ -1,0 +1,92 @@
+[
+  {
+    "id": "katana",
+    "name": "KATANA",
+    "shape": "katana",
+    "blade": "#cfd8dc",
+    "dmg": 1.0,
+    "atkSpeed": 1.0,
+    "cost": 0,
+    "premium": false
+  },
+  {
+    "id": "claymore",
+    "name": "CLAYMORE",
+    "shape": "greatsword",
+    "blade": "#b0bec5",
+    "dmg": 1.35,
+    "atkSpeed": 0.85,
+    "cost": 400,
+    "premium": false
+  },
+  {
+    "id": "axe",
+    "name": "HACHA",
+    "shape": "axe",
+    "blade": "#d68a3a",
+    "dmg": 1.45,
+    "atkSpeed": 0.9,
+    "cost": 600,
+    "premium": false
+  },
+  {
+    "id": "hammer",
+    "name": "MARTILLO",
+    "shape": "hammer",
+    "blade": "#888888",
+    "dmg": 1.6,
+    "atkSpeed": 0.7,
+    "cost": 900,
+    "premium": false
+  },
+  {
+    "id": "scythe",
+    "name": "GUADAÑA",
+    "shape": "scythe",
+    "blade": "#222222",
+    "dmg": 1.25,
+    "atkSpeed": 1.0,
+    "cost": 500,
+    "premium": false
+  },
+  {
+    "id": "dual",
+    "name": "DAGAS DUAL",
+    "shape": "dual",
+    "blade": "#cfd8dc",
+    "dmg": 0.7,
+    "atkSpeed": 1.7,
+    "cost": 350,
+    "premium": false
+  },
+  {
+    "id": "plasma",
+    "name": "SABLE PLASMA",
+    "shape": "plasma",
+    "blade": "#1ae0ff",
+    "dmg": 1.3,
+    "atkSpeed": 1.0,
+    "cost": 35,
+    "premium": true
+  },
+  {
+    "id": "ki",
+    "name": "ESPADA KI",
+    "shape": "ki",
+    "blade": "#ffd54a",
+    "dmg": 1.5,
+    "atkSpeed": 1.0,
+    "cost": 50,
+    "premium": true
+  },
+  {
+    "id": "void",
+    "name": "GUADAÑA ABISMO",
+    "shape": "voidScythe",
+    "blade": "#9c27b0",
+    "dmg": 1.7,
+    "atkSpeed": 1.0,
+    "cost": 80,
+    "premium": true
+  }
+]

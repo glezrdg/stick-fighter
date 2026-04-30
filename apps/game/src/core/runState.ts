@@ -8,9 +8,34 @@
  *
  * Only **per-run** state lives here. Meta-progression (gold totals across
  * runs, owned cosmetics, settings) belongs in `SaveStore`.
- *
- * F1.1 starts with a minimal skeleton; fields grow as systems land in F1.2+.
  */
+
+/**
+ * Per-run buff accumulators. Each field starts at 0 and grows when the
+ * player picks a wave-clear buff card (see WAVE_BUFFS in the legacy and
+ * the future BuffCardScene in F2.3). Owned passive skills contribute
+ * separately via the BuffSystem — runBuffs only carry the wave-clear deltas.
+ */
+export interface RunBuffs {
+  /** +% damage (FILO AFILADO: +0.25). */
+  dmg: number
+  /** +% attack speed (MANOS RÁPIDAS: +0.20). */
+  atkSpeed: number
+  /** +flat HP added to maxHp (PIEL DURA: +25). */
+  hpMax: number
+  /** +% crit chance (OJO ASESINO: +0.15). */
+  crit: number
+  /** +% knockback (GOLPE PESADO: +0.50). */
+  knockback: number
+  /** +HP/sec flat (REGEN: +1). */
+  regen: number
+  /** +% gold earned (CODICIA: +0.30). */
+  gold: number
+}
+
+export function emptyRunBuffs(): RunBuffs {
+  return { dmg: 0, atkSpeed: 0, hpMax: 0, crit: 0, knockback: 0, regen: 0, gold: 0 }
+}
 
 export interface RunState {
   /** Increasing real-seconds since the run started. */
@@ -38,6 +63,17 @@ export interface RunState {
 
   // --- The seed driving this run's RNG (for replay / leaderboard). ---
   seed: number
+
+  // --- Buff accumulators applied this run. ---
+  runBuffs: RunBuffs
+
+  // --- Active skill timers. ---
+  /** Seconds remaining of the swordTornado AOE. */
+  tornadoTimer: number
+  /** Camera shake intensity remaining (seconds). */
+  cameraShake: number
+  /** Slow-mo timer remaining (seconds). */
+  slowMo: number
 }
 
 /** Build a fresh RunState for a new run. */
@@ -54,5 +90,9 @@ export function createRunState(opts: { seed: number; playerMaxHp: number }): Run
     playerMaxHp: opts.playerMaxHp,
     cooldowns: [0, 0],
     seed: opts.seed,
+    runBuffs: emptyRunBuffs(),
+    tornadoTimer: 0,
+    cameraShake: 0,
+    slowMo: 0,
   }
 }

@@ -8,6 +8,7 @@ const dummyActive: Skill = {
   kind: 'active',
   name: 'Test',
   desc: '',
+  cost: 100,
   baseCooldown: 1,
   execute() {},
 }
@@ -17,6 +18,7 @@ const dummyPassive: Skill = {
   kind: 'passive',
   name: 'Test Passive',
   desc: '',
+  cost: 200,
   modifiers: { dmgMul: 1.1 },
 }
 

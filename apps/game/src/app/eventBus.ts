@@ -43,6 +43,8 @@ export type GameEvents = {
   // ---- Skills ------------------------------------------------------
   'skill:cast': { skillId: string; slot: 0 | 1 }
   'skill:cooldown:changed': { slot: 0 | 1; remaining: number; total: number }
+  /** Emitted on run start so the HUD can render the equipped skill icons. */
+  'skills:equipped': { slot0: string | null; slot1: string | null }
 
   // ---- UI ----------------------------------------------------------
   'ui:shop:open': Record<string, never>
