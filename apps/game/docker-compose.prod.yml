@@ -1,0 +1,36 @@
+# Production compose para stick-fighter (frontend) en el VPS personal.
+# Usado por el workflow .github/workflows/deploy-game.yml.
+#
+# Subdomain: stick-fighter.neomac.io (cert wildcard *.neomac.io via cf-dns en Traefik).
+
+services:
+  game:
+    container_name: ${PROJECT_NAME:-stick-fighter}
+    image: ${PROJECT_NAME:-stick-fighter}:latest
+    build:
+      context: ../..
+      dockerfile: apps/game/Dockerfile
+      args:
+        VITE_API_URL: ${VITE_API_URL:-https://api.stick-fighter.neomac.io}
+    restart: unless-stopped
+    networks:
+      - web
+    mem_limit: 256m
+    labels:
+      - 'traefik.enable=true'
+      - 'traefik.docker.network=web'
+      - 'traefik.http.routers.${PROJECT_NAME:-stick-fighter}.rule=Host(`${SUBDOMAIN:-stick-fighter}.neomac.io`)'
+      - 'traefik.http.routers.${PROJECT_NAME:-stick-fighter}.entrypoints=websecure'
+      - 'traefik.http.routers.${PROJECT_NAME:-stick-fighter}.tls=true'
+      - 'traefik.http.routers.${PROJECT_NAME:-stick-fighter}.tls.certresolver=cf-dns'
+      - 'traefik.http.services.${PROJECT_NAME:-stick-fighter}.loadbalancer.server.port=80'
+      # HTTP→HTTPS redirect
+      - 'traefik.http.routers.${PROJECT_NAME:-stick-fighter}-http.rule=Host(`${SUBDOMAIN:-stick-fighter}.neomac.io`)'
+      - 'traefik.http.routers.${PROJECT_NAME:-stick-fighter}-http.entrypoints=web'
+      - 'traefik.http.routers.${PROJECT_NAME:-stick-fighter}-http.middlewares=${PROJECT_NAME:-stick-fighter}-https'
+      - 'traefik.http.middlewares.${PROJECT_NAME:-stick-fighter}-https.redirectscheme.scheme=https'
+      - 'traefik.http.middlewares.${PROJECT_NAME:-stick-fighter}-https.redirectscheme.permanent=true'
+
+networks:
+  web:
+    external: true

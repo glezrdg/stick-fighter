@@ -1,0 +1,13 @@
+node_modules
+dist
+.vite
+.cache
+.turbo
+.git
+.gitignore
+README.md
+*.log
+npm-debug.log
+.vercel
+.vscode
+.idea

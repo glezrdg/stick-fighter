@@ -1,0 +1,82 @@
+name: Deploy Game to VPS
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/game/**'
+      - 'packages/shared/**'
+      - 'packages/content/**'
+      - 'packages/sim/**'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - 'tsconfig.base.json'
+      - '.github/workflows/deploy-game.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-game-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, neomac-vps]
+    env:
+      PROJECT_NAME: ${{ vars.GAME_PROJECT_NAME || 'stick-fighter' }}
+      SUBDOMAIN: ${{ vars.GAME_SUBDOMAIN || 'stick-fighter' }}
+      VITE_API_URL: ${{ vars.VITE_API_URL || 'https://api.stick-fighter.neomac.io' }}
+
+    steps:
+      - name: Sync repo to /opt/apps
+        env:
+          REPO_URL: https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git
+        run: |
+          set -euo pipefail
+          mkdir -p /opt/apps
+          cd /opt/apps
+          if [ ! -d "${PROJECT_NAME}" ]; then
+            git clone "${REPO_URL}" "${PROJECT_NAME}"
+          fi
+          cd "${PROJECT_NAME}"
+          git remote set-url origin "${REPO_URL}"
+          git fetch origin main
+          git reset --hard origin/main
+
+      - name: Write apps/game/.env (compose vars)
+        run: |
+          set -euo pipefail
+          cd "/opt/apps/${PROJECT_NAME}/apps/game"
+          cat > .env <<EOF
+          PROJECT_NAME=${PROJECT_NAME}
+          SUBDOMAIN=${SUBDOMAIN}
+          VITE_API_URL=${VITE_API_URL}
+          EOF
+          chmod 600 .env
+
+      - name: Build & start container
+        run: |
+          set -euo pipefail
+          cd "/opt/apps/${PROJECT_NAME}/apps/game"
+          docker compose -f docker-compose.prod.yml build --no-cache
+          docker compose -f docker-compose.prod.yml up -d
+
+      - name: Prune old images
+        run: docker image prune -f
+
+      - name: Health check
+        run: |
+          set -euo pipefail
+          # Espera a que Traefik enrutee. Hit directo al container primero (más rápido), luego via dominio.
+          for i in $(seq 1 20); do
+            if docker exec "${PROJECT_NAME}" wget -q -O- http://localhost/healthz 2>/dev/null | grep -q ok; then
+              echo "container healthy"
+              break
+            fi
+            sleep 2
+          done
+          # Verifica via dominio público (si Cloudflare ya está apuntando).
+          if curl -fsSL --max-time 15 "https://${SUBDOMAIN}.neomac.io/healthz" | grep -q ok; then
+            echo "public URL healthy: https://${SUBDOMAIN}.neomac.io"
+          else
+            echo "::warning::public healthcheck failed — DNS/Cloudflare may still be propagating"
+          fi
