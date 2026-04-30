@@ -88,6 +88,9 @@ export class ArenaScene extends BaseScene {
   private tornadoTickAcc = 0
   private busUnsubs: Array<() => void> = []
   private activePopups = 0
+  /** Wall-clock seconds since the last hit-stop landed. Used to throttle
+   *  freeze frames so AOE / fast combos don't turn the game into slideshow. */
+  private hitStopCooldown = 0
   private loadout!: RunLoadout
   private lastAliveCount = -1
   private currentWaveTotal = 0
@@ -185,7 +188,9 @@ export class ArenaScene extends BaseScene {
         if (!this.runState.paused) this.castSkill(slot)
       }),
       this.bus.on('enemy:death', ({ enemyId, byPlayer }) => this.onEnemyDeath(enemyId, byPlayer)),
-      this.bus.on('combat:hit', ({ targetId, dmg, crit }) => this.onCombatHit(targetId, dmg, crit)),
+      this.bus.on('combat:hit', ({ attackerId, targetId, dmg, crit }) =>
+        this.onCombatHit(attackerId, targetId, dmg, crit),
+      ),
       this.bus.on('skill:cast', ({ skillId }) => this.onSkillCast(skillId)),
       this.bus.on('obstacle:explode', ({ x, y }) => {
         this.particles.spawnShockwave(x, y, 0xff8000, 24)
@@ -237,6 +242,11 @@ export class ArenaScene extends BaseScene {
     // the impact frame "lands". Camera shake still ticks via Phaser internally.
     if (this.runState.hitStop > 0) {
       this.runState.hitStop = Math.max(0, this.runState.hitStop - realDt)
+    }
+    // Cooldown between freezes (ticks on REAL dt so AOE / over-buffed players
+    // don't stack freezes into a slideshow).
+    if (this.hitStopCooldown > 0) {
+      this.hitStopCooldown = Math.max(0, this.hitStopCooldown - realDt)
     }
     // Decay slow-mo on REAL dt; scale gameplay dt while active (legacy 1318: 0.4×).
     if (this.runState.slowMo > 0) {
@@ -453,7 +463,7 @@ export class ArenaScene extends BaseScene {
     }
   }
 
-  private onCombatHit(targetId: string, dmg: number, crit: boolean): void {
+  private onCombatHit(attackerId: string, targetId: string, dmg: number, crit: boolean): void {
     const enemy = this.waves.getEnemies().find((e) => e.id === targetId)
     if (!enemy) return
     const text = (crit ? 'CRIT! -' : '-') + Math.ceil(dmg)
@@ -464,20 +474,39 @@ export class ArenaScene extends BaseScene {
     this.particles.spawnSlashFx(enemy.x, enemy.y - 18, dirX, dirY, this.auraColor)
     this.particles.spawnBlood(enemy.x, enemy.y - 18, dirX, dirY, crit ? 18 : 10)
 
-    // Hit-stop: short freeze on every connecting hit so the impact reads.
-    // Crits land harder; killing blows (hp <= 0 here) get the longest freeze.
+    // Hit-stop only on direct player swings (not on AOE / DOT ticks). Killing
+    // blows from any source still freeze, but they're handled in onEnemyDeath.
     const isKill = enemy.hp <= 0
-    const hitStop = isKill ? (crit ? 0.16 : 0.12) : crit ? 0.09 : 0.05
-    this.runState.hitStop = Math.max(this.runState.hitStop, hitStop)
+    const isPrimary = attackerId === 'player'
+    if (isPrimary && !isKill) {
+      this.requestHitStop(crit ? 0.09 : 0.05)
+    }
 
-    // Shake scales with damage (clamped). Crits add a floor.
-    const dmgShake = Math.min(0.35, Math.max(0.05, dmg / 80))
-    const shake = crit ? Math.max(dmgShake, 0.22) : dmgShake
+    // Shake scales with damage (clamped). Crits add a floor. AOE ticks get a
+    // softer cap so 10 simultaneous hits don't pin the camera at max.
+    const shakeCap = isPrimary ? 0.35 : 0.12
+    const dmgShake = Math.min(shakeCap, Math.max(0.05, dmg / 80))
+    const shake = crit && isPrimary ? Math.max(dmgShake, 0.22) : dmgShake
     this.runState.cameraShake = Math.max(this.runState.cameraShake, shake)
 
-    if (crit) {
+    if (crit && isPrimary) {
       this.runState.slowMo = Math.max(this.runState.slowMo, 0.08)
     }
+  }
+
+  /**
+   * Apply a hit-stop with throttle + cap so AOE / over-buffed combos can't
+   * stack freezes into a slideshow:
+   *  - skipped if another freeze landed in the last 80ms
+   *  - resulting freeze is capped at 0.18s total
+   */
+  private requestHitStop(duration: number): void {
+    const HIT_STOP_THROTTLE = 0.08
+    const HIT_STOP_CAP = 0.18
+    if (this.hitStopCooldown > 0) return
+    const next = Math.min(HIT_STOP_CAP, Math.max(this.runState.hitStop, duration))
+    this.runState.hitStop = next
+    this.hitStopCooldown = HIT_STOP_THROTTLE
   }
 
   private onSkillCast(_skillId: string): void {
@@ -503,9 +532,10 @@ export class ArenaScene extends BaseScene {
       aliveEnemies: aliveCount,
     })
     this.runState.cameraShake = Math.max(this.runState.cameraShake, aliveCount > 8 ? 0.08 : 0.16)
-    // Death stop scales with size — bosses freeze harder.
-    const deathStop = type.scale >= 1.3 ? 0.22 : 0.13
-    this.runState.hitStop = Math.max(this.runState.hitStop, deathStop)
+    // Death stop scales with size — bosses freeze harder. Throttled so a wave
+    // of simultaneous deaths (AOE wipe) doesn't compound into a long slideshow.
+    const deathStop = type.scale >= 1.3 ? 0.18 : 0.1
+    this.requestHitStop(deathStop)
 
     if (!byPlayer) return
     const goldGain = Math.floor(type.goldReward * this.stats.goldMul)
