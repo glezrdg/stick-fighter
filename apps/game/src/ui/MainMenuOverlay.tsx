@@ -45,14 +45,23 @@ export const MainMenuOverlay: Component<MainMenuOverlayProps> = (props) => {
     offAuth()
   })
 
-  const NAME_RE = /^[\p{L}\p{N} _-]*$/u
+  // Allow any printable character: letters (with diacritics), digits,
+  // marks, punctuation, symbols, emojis, common ASCII. Reject only control
+  // characters so the field accepts "José", "Mike's", "🥷⚔", "GG.WP", etc.
+  // Previous regex `[\p{L}\p{N} _-]` was rejecting common warrior names.
+  // Strip control chars (codepoints < 0x20 or 0x7F) instead of validating
+  // with a regex — eslint's `no-control-regex` would flag a literal range.
+  // Any visible glyph is accepted: emojis, accents, apostrophes, digits.
+  const stripControl = (s: string): string =>
+    Array.from(s)
+      .filter((c) => {
+        const code = c.codePointAt(0) ?? 0
+        return code >= 0x20 && code !== 0x7f
+      })
+      .join('')
 
   const persistName = (raw: string): boolean => {
-    const trimmed = raw.trim().slice(0, 20)
-    if (trimmed && !NAME_RE.test(trimmed)) {
-      setNameError('letras, números, espacios y _-')
-      return false
-    }
+    const trimmed = stripControl(raw).trim().slice(0, 20)
     setNameError(null)
     const save = props.getSave()
     const next = trimmed ? trimmed : undefined

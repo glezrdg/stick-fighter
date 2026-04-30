@@ -16,6 +16,7 @@ import { JoystickOverlay } from './ui/JoystickOverlay'
 import { MainMenuOverlay } from './ui/MainMenuOverlay'
 import { PauseMenu } from './ui/PauseMenu'
 import { ShopOverlay } from './ui/ShopOverlay'
+import { TouchButtons } from './ui/TouchButtons'
 import { TutorialOverlay } from './ui/TutorialOverlay'
 import { WaveBuffCards } from './ui/WaveBuffCards'
 
@@ -38,6 +39,7 @@ async function main(): Promise<void> {
         <>
           <HudRoot bus={partialServices.bus} initialHp={100} initialMaxHp={100} />
           <JoystickOverlay bus={partialServices.bus} />
+          <TouchButtons bus={partialServices.bus} />
           <WaveBuffCards bus={partialServices.bus} />
           <ShopOverlay
             bus={partialServices.bus}
