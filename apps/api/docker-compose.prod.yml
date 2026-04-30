@@ -1,15 +1,15 @@
-# Production compose for stick-fighter-api on the personal VPS.
-# Used by the /deploy-to-vps pipeline. Postgres + API + a one-shot migrate job.
+# Production compose para stick-fighter-api en el VPS personal.
+# Usado por el workflow .github/workflows/deploy-api.yml.
 #
-# Subdomain: api.stick-fighter.neomac.io (Traefik wildcard cert *.neomac.io).
-# DB stays as a Docker volume per F4 spec — backups by `docker exec pg_dump`
-# from a host cron, written to /opt/backups (configured outside this file).
+# Subdomain: stick-fighter-api.neomac.io (cert wildcard *.neomac.io via cf-dns).
+# DB stays as a Docker volume — backup vía pg_dump cron del host (out of scope here).
 
 services:
   api:
-    container_name: stick-fighter-api
-    image: ghcr.io/glezrdg/stick-fighter-api:latest
+    container_name: ${PROJECT_NAME:-stick-fighter-api}
+    image: ${PROJECT_NAME:-stick-fighter-api}:latest
     build:
+      # context apunta al monorepo root (..). Dockerfile vive en apps/api/.
       context: ../..
       dockerfile: apps/api/Dockerfile
     restart: unless-stopped
@@ -32,18 +32,21 @@ services:
     labels:
       - 'traefik.enable=true'
       - 'traefik.docker.network=web'
-      - 'traefik.http.routers.stick-fighter-api.rule=Host(`api.stick-fighter.neomac.io`)'
-      - 'traefik.http.routers.stick-fighter-api.entrypoints=websecure'
-      - 'traefik.http.routers.stick-fighter-api.tls=true'
-      - 'traefik.http.routers.stick-fighter-api.tls.certresolver=cf-dns'
-      - 'traefik.http.services.stick-fighter-api.loadbalancer.server.port=3000'
+      - 'traefik.http.routers.${PROJECT_NAME:-stick-fighter-api}.rule=Host(`${SUBDOMAIN:-stick-fighter-api}.neomac.io`)'
+      - 'traefik.http.routers.${PROJECT_NAME:-stick-fighter-api}.entrypoints=websecure'
+      - 'traefik.http.routers.${PROJECT_NAME:-stick-fighter-api}.tls=true'
+      - 'traefik.http.routers.${PROJECT_NAME:-stick-fighter-api}.tls.certresolver=cf-dns'
+      - 'traefik.http.services.${PROJECT_NAME:-stick-fighter-api}.loadbalancer.server.port=3000'
+      # HTTP→HTTPS redirect
+      - 'traefik.http.routers.${PROJECT_NAME:-stick-fighter-api}-http.rule=Host(`${SUBDOMAIN:-stick-fighter-api}.neomac.io`)'
+      - 'traefik.http.routers.${PROJECT_NAME:-stick-fighter-api}-http.entrypoints=web'
+      - 'traefik.http.routers.${PROJECT_NAME:-stick-fighter-api}-http.middlewares=${PROJECT_NAME:-stick-fighter-api}-https'
+      - 'traefik.http.middlewares.${PROJECT_NAME:-stick-fighter-api}-https.redirectscheme.scheme=https'
+      - 'traefik.http.middlewares.${PROJECT_NAME:-stick-fighter-api}-https.redirectscheme.permanent=true'
 
   api-migrate:
-    container_name: stick-fighter-api-migrate
-    image: ghcr.io/glezrdg/stick-fighter-api:latest
-    build:
-      context: ../..
-      dockerfile: apps/api/Dockerfile
+    container_name: ${PROJECT_NAME:-stick-fighter-api}-migrate
+    image: ${PROJECT_NAME:-stick-fighter-api}:latest
     restart: 'no'
     command: ['node', 'dist/db/migrate.js']
     working_dir: /app
@@ -56,7 +59,7 @@ services:
       - default
 
   api-postgres:
-    container_name: stick-fighter-postgres
+    container_name: ${PROJECT_NAME:-stick-fighter-api}-postgres
     image: postgres:16-alpine
     restart: unless-stopped
     environment:

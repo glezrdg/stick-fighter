@@ -74,6 +74,9 @@ export interface RunState {
   cameraShake: number
   /** Slow-mo timer remaining (seconds). */
   slowMo: number
+  /** Hit-stop freeze remaining (seconds). While > 0 gameplay dt is forced to 0
+   *  so the impact frame "lands". Decays on real (unscaled) dt. */
+  hitStop: number
 }
 
 /** Build a fresh RunState for a new run. */
@@ -94,5 +97,6 @@ export function createRunState(opts: { seed: number; playerMaxHp: number }): Run
     tornadoTimer: 0,
     cameraShake: 0,
     slowMo: 0,
+    hitStop: 0,
   }
 }

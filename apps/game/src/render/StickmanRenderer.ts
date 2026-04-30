@@ -133,7 +133,13 @@ export class StickmanRenderer {
     g.clear()
 
     const G = STICKMAN_GEOMETRY
-    const lineWidth = G.LINE_WIDTH * scale
+    // Hurt-flash pulse: body thickens and head puffs while absorbing the hit.
+    // `hurtFlash` is set to ~0.12s on connect; we ramp from full → 0 over that
+    // window. Pure cosmetic — no skeleton math changes.
+    const hurtPulse = p.hurtFlash > 0 ? Math.min(1, p.hurtFlash / 0.12) : 0
+    const widthMul = 1 + hurtPulse * 0.45
+    const headMul = 1 + hurtPulse * 0.2
+    const lineWidth = G.LINE_WIDTH * scale * widthMul
 
     // Color: white during hurt flash, blink during iframes, black otherwise.
     const color = this.computeColor(p)
@@ -257,7 +263,7 @@ export class StickmanRenderer {
 
     // ---- HEAD ----
     g.fillStyle(color, 1)
-    g.fillCircle(0, headY, G.HEAD_RADIUS * scale)
+    g.fillCircle(0, headY, G.HEAD_RADIUS * scale * headMul)
 
     // ---- ACCESSORY (drawn on top of head) ----
     if (p.accessory && p.accessory !== 'none' && p.hurtFlash <= 0) {

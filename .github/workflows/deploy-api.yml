@@ -1,0 +1,85 @@
+name: Deploy API to VPS
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/api/**'
+      - 'packages/shared/**'
+      - '.github/workflows/deploy-api.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-api-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, neomac-vps]
+    env:
+      PROJECT_NAME: ${{ vars.PROJECT_NAME || 'stick-fighter-api' }}
+      SUBDOMAIN: ${{ vars.SUBDOMAIN || 'stick-fighter-api' }}
+      APP_PORT: ${{ vars.APP_PORT || '3000' }}
+      API_VERSION: ${{ github.sha }}
+
+    steps:
+      - name: Sync repo to /opt/apps
+        env:
+          REPO_URL: https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git
+        run: |
+          set -euo pipefail
+          mkdir -p /opt/apps
+          cd /opt/apps
+          if [ ! -d "${PROJECT_NAME}" ]; then
+            git clone "${REPO_URL}" "${PROJECT_NAME}"
+          fi
+          cd "${PROJECT_NAME}"
+          git remote set-url origin "${REPO_URL}"
+          git fetch origin main
+          git reset --hard origin/main
+
+      - name: Write apps/api/.env from secrets
+        env:
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          CORS_ALLOWED_ORIGINS: ${{ secrets.CORS_ALLOWED_ORIGINS }}
+        run: |
+          set -euo pipefail
+          cd "/opt/apps/${PROJECT_NAME}/apps/api"
+          if [ -z "${POSTGRES_PASSWORD:-}" ]; then
+            echo "::error::POSTGRES_PASSWORD secret not set"
+            exit 1
+          fi
+          cat > .env <<EOF
+          PROJECT_NAME=${PROJECT_NAME}
+          SUBDOMAIN=${SUBDOMAIN}
+          APP_PORT=${APP_PORT}
+          API_VERSION=${API_VERSION}
+          POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+          CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-http://localhost:5173}
+          EOF
+          chmod 600 .env
+
+      - name: Build & start containers
+        run: |
+          set -euo pipefail
+          cd "/opt/apps/${PROJECT_NAME}/apps/api"
+          docker compose -f docker-compose.prod.yml up -d --build
+
+      - name: Prune old images
+        run: docker image prune -f
+
+      - name: Health check
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 24); do
+            if curl -sf "https://${SUBDOMAIN}.neomac.io/health" --max-time 5 > /dev/null; then
+              echo "✅ ${SUBDOMAIN}.neomac.io is up"
+              curl -s "https://${SUBDOMAIN}.neomac.io/health"
+              exit 0
+            fi
+            echo "waiting for app… ($i/24)"
+            sleep 5
+          done
+          echo "::error::health check timed out"
+          docker logs "${PROJECT_NAME}" --tail 80
+          exit 1

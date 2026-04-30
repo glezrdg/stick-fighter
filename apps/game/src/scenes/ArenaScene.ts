@@ -233,11 +233,16 @@ export class ArenaScene extends BaseScene {
     if (this.runState.paused) return
     this.runState.elapsed += realDt
 
+    // Hit-stop decays on REAL dt; while active gameplay dt is forced to 0 so
+    // the impact frame "lands". Camera shake still ticks via Phaser internally.
+    if (this.runState.hitStop > 0) {
+      this.runState.hitStop = Math.max(0, this.runState.hitStop - realDt)
+    }
     // Decay slow-mo on REAL dt; scale gameplay dt while active (legacy 1318: 0.4×).
     if (this.runState.slowMo > 0) {
       this.runState.slowMo = Math.max(0, this.runState.slowMo - realDt)
     }
-    const dt = this.runState.slowMo > 0 ? realDt * 0.4 : realDt
+    const dt = this.runState.hitStop > 0 ? 0 : this.runState.slowMo > 0 ? realDt * 0.4 : realDt
 
     // Decay other run-state timers on the (possibly slowed) dt.
     if (this.runState.cameraShake > 0) {
@@ -458,8 +463,19 @@ export class ArenaScene extends BaseScene {
     const dirY = this.player.attackDirY
     this.particles.spawnSlashFx(enemy.x, enemy.y - 18, dirX, dirY, this.auraColor)
     this.particles.spawnBlood(enemy.x, enemy.y - 18, dirX, dirY, crit ? 18 : 10)
+
+    // Hit-stop: short freeze on every connecting hit so the impact reads.
+    // Crits land harder; killing blows (hp <= 0 here) get the longest freeze.
+    const isKill = enemy.hp <= 0
+    const hitStop = isKill ? (crit ? 0.16 : 0.12) : crit ? 0.09 : 0.05
+    this.runState.hitStop = Math.max(this.runState.hitStop, hitStop)
+
+    // Shake scales with damage (clamped). Crits add a floor.
+    const dmgShake = Math.min(0.35, Math.max(0.05, dmg / 80))
+    const shake = crit ? Math.max(dmgShake, 0.22) : dmgShake
+    this.runState.cameraShake = Math.max(this.runState.cameraShake, shake)
+
     if (crit) {
-      this.runState.cameraShake = Math.max(this.runState.cameraShake, 0.25)
       this.runState.slowMo = Math.max(this.runState.slowMo, 0.08)
     }
   }
@@ -487,6 +503,9 @@ export class ArenaScene extends BaseScene {
       aliveEnemies: aliveCount,
     })
     this.runState.cameraShake = Math.max(this.runState.cameraShake, aliveCount > 8 ? 0.08 : 0.16)
+    // Death stop scales with size — bosses freeze harder.
+    const deathStop = type.scale >= 1.3 ? 0.22 : 0.13
+    this.runState.hitStop = Math.max(this.runState.hitStop, deathStop)
 
     if (!byPlayer) return
     const goldGain = Math.floor(type.goldReward * this.stats.goldMul)
