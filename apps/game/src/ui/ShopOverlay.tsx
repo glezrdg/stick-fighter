@@ -1,4 +1,4 @@
-import { type Aura, auras, type Weapon, weapons } from '@stick/content'
+import { type Aura, auras, type Skin, skins, type Weapon, weapons } from '@stick/content'
 import type { SaveCurrent } from '@stick/shared'
 import { type EventBus, allSkills, BuffSystem } from '@stick/sim'
 import { type Component, For, Show, createSignal, onCleanup } from 'solid-js'
@@ -12,7 +12,7 @@ interface ShopOverlayProps {
   setSave: (next: SaveCurrent) => void
 }
 
-type Tab = 'weapons' | 'skills' | 'auras'
+type Tab = 'weapons' | 'skills' | 'auras' | 'skins'
 
 /**
  * Shop overlay — paleta del legacy (LEGACY_SPEC §5.2):
@@ -83,6 +83,27 @@ export const ShopOverlay: Component<ShopOverlayProps> = (props) => {
     if (save.skills.owned.includes(id)) return
     save.gold -= cost
     save.skills.owned.push(id)
+    persist()
+  }
+
+  const buySkin = (s: Skin) => {
+    const save = props.getSave()
+    if (save.cosmetics.char.owned.includes(s.id)) return
+    if (s.premium) {
+      if (save.gems < s.cost) return
+      save.gems -= s.cost
+    } else {
+      if (save.gold < s.cost) return
+      save.gold -= s.cost
+    }
+    save.cosmetics.char.owned.push(s.id)
+    persist()
+  }
+
+  const equipSkin = (s: Skin) => {
+    const save = props.getSave()
+    if (!save.cosmetics.char.owned.includes(s.id)) return
+    save.cosmetics.char.equipped = s.id
     persist()
   }
 
@@ -202,7 +223,7 @@ export const ShopOverlay: Component<ShopOverlayProps> = (props) => {
 
         {/* Tabs */}
         <div style={{ display: 'flex', gap: '6px', 'margin-bottom': '14px' }}>
-          <For each={['weapons', 'skills', 'auras'] as const}>
+          <For each={['weapons', 'skins', 'skills', 'auras'] as const}>
             {(t) => (
               <button
                 type="button"
@@ -225,7 +246,13 @@ export const ShopOverlay: Component<ShopOverlayProps> = (props) => {
                   'text-shadow': '1px 1px 0 #000',
                 }}
               >
-                {t === 'weapons' ? 'ESPADAS' : t === 'skills' ? 'HABILIDADES' : 'AURAS'}
+                {t === 'weapons'
+                  ? 'ESPADAS'
+                  : t === 'skins'
+                    ? 'CUERPO'
+                    : t === 'skills'
+                      ? 'HABILIDADES'
+                      : 'AURAS'}
               </button>
             )}
           </For>
@@ -292,6 +319,64 @@ export const ShopOverlay: Component<ShopOverlayProps> = (props) => {
                         style={shopBtn(true, true)}
                       >
                         EQUIPAR
+                      </button>
+                    </Show>
+                  </ShopRow>
+                )
+              }}
+            </For>
+          </Show>
+
+          <Show when={tab() === 'skins'}>
+            <For each={skins}>
+              {(s) => {
+                const save = () => {
+                  rev()
+                  return props.getSave()
+                }
+                const owned = () => save().cosmetics.char.owned.includes(s.id)
+                const equipped = () => save().cosmetics.char.equipped === s.id
+                const canAfford = () => (s.premium ? save().gems >= s.cost : save().gold >= s.cost)
+                return (
+                  <ShopRow
+                    icon="🥷"
+                    iconBg={s.color}
+                    title={s.name + (s.premium ? ' 💎' : '')}
+                    desc={`Ropa ${s.clothing} · ${s.accessory}`}
+                    state={equipped() ? 'equipped' : owned() ? 'owned' : 'locked'}
+                  >
+                    <Show
+                      when={!owned()}
+                      fallback={
+                        <Show when={!equipped()}>
+                          <button
+                            type="button"
+                            onClick={() => equipSkin(s)}
+                            style={shopBtn(true, true)}
+                          >
+                            EQUIPAR
+                          </button>
+                        </Show>
+                      }
+                    >
+                      <button
+                        type="button"
+                        onClick={() => buySkin(s)}
+                        disabled={!canAfford()}
+                        style={shopBtn(canAfford())}
+                        title={
+                          !canAfford()
+                            ? `Te faltan ${s.premium ? '💎' : '🪙'}${
+                                s.cost - (s.premium ? save().gems : save().gold)
+                              }`
+                            : ''
+                        }
+                      >
+                        {canAfford()
+                          ? `COMPRAR ${s.premium ? '💎' : '🪙'}${s.cost}`
+                          : `${s.premium ? '💎' : '🪙'}-${
+                              s.cost - (s.premium ? save().gems : save().gold)
+                            }`}
                       </button>
                     </Show>
                   </ShopRow>

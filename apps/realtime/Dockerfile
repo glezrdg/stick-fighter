@@ -4,6 +4,10 @@
 
 FROM node:22-alpine AS base
 WORKDIR /repo
+# `git` necesario para pnpm deploy: uWebSockets.js (peer de colyseus) se
+# resuelve por git+https. `python3 + make + g++` necesarios si bajamos a
+# native modules con node-gyp; los dejamos solo en build, no en runtime.
+RUN apk add --no-cache git python3 make g++
 RUN corepack enable && corepack prepare pnpm@10.30.3 --activate
 
 # ---- deps ----

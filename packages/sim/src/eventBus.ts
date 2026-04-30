@@ -45,6 +45,18 @@ export type GameEvents = {
   'combo:finisher': { kind: string }
   /** Fired when a destructible obstacle explodes (barrel/crate). */
   'obstacle:explode': { x: number; y: number; type: 'barrel' | 'crate' | 'column' }
+  /** Snapshot of effective player stats. Emitted on run start and every
+   *  time the player picks a wave-buff card so the HUD can render the
+   *  legacy-style chips (HP / DMG / VEL / CRT / REG / KB / ORO). */
+  'stats:changed': {
+    maxHp: number
+    dmgMul: number
+    atkSpeedMul: number
+    critChance: number
+    regenPerSec: number
+    knockbackMul: number
+    goldMul: number
+  }
 
   // ---- Currency ----------------------------------------------------
   'gold:changed': { gold: number; delta: number }

@@ -275,6 +275,7 @@ export class ArenaScene extends BaseScene {
       slot0: this.loadout.equipped[0],
       slot1: this.loadout.equipped[1],
     })
+    this.emitStats()
 
     this.waves.startNextWave()
 
@@ -480,6 +481,20 @@ export class ArenaScene extends BaseScene {
       runBuffs: this.runState.runBuffs,
       equippedWeaponId: this.loadout.weaponId,
       weaponLevel: this.loadout.weaponLevel,
+    })
+    this.emitStats()
+  }
+
+  /** Push the current effective stats onto the bus so the HUD chips update. */
+  private emitStats(): void {
+    this.bus.emit('stats:changed', {
+      maxHp: this.stats.maxHp,
+      dmgMul: this.stats.dmgMul,
+      atkSpeedMul: this.stats.atkSpeedMul,
+      critChance: this.stats.critChance,
+      regenPerSec: this.stats.regenPerSec,
+      knockbackMul: this.stats.knockbackMul,
+      goldMul: this.stats.goldMul,
     })
   }
 

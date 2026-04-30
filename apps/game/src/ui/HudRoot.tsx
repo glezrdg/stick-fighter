@@ -39,6 +39,13 @@ export const HudRoot: Component<HudRootProps> = (props) => {
     emptySlot(),
     emptySlot(),
   ])
+  // Effective stats panel — populated by `stats:changed` from the scene.
+  const [dmgMul, setDmgMul] = createSignal(1)
+  const [atkSpeedMul, setAtkSpeedMul] = createSignal(1)
+  const [critChance, setCritChance] = createSignal(0.05)
+  const [regenPerSec, setRegenPerSec] = createSignal(0)
+  const [knockbackMul, setKnockbackMul] = createSignal(1)
+  const [goldMul, setGoldMul] = createSignal(1)
 
   const updateSlot = (slot: 0 | 1, patch: Partial<SkillSlotState>) => {
     setSlots((cur) => {
@@ -81,6 +88,17 @@ export const HudRoot: Component<HudRootProps> = (props) => {
     setCombo(0)
     setMaxCombo(0)
   })
+  const offStats = props.bus.on(
+    'stats:changed',
+    ({ dmgMul, atkSpeedMul, critChance, regenPerSec, knockbackMul, goldMul }) => {
+      setDmgMul(dmgMul)
+      setAtkSpeedMul(atkSpeedMul)
+      setCritChance(critChance)
+      setRegenPerSec(regenPerSec)
+      setKnockbackMul(knockbackMul)
+      setGoldMul(goldMul)
+    },
+  )
 
   // Auto-hide wave banner after the bannerIn animation finishes.
   createEffect(() => {
@@ -99,6 +117,7 @@ export const HudRoot: Component<HudRootProps> = (props) => {
     offCd()
     offCombo()
     offComboReset()
+    offStats()
     offRunStart()
   })
 
@@ -175,6 +194,29 @@ export const HudRoot: Component<HudRootProps> = (props) => {
             </span>
           </Show>
           <span style={{ color: '#ffd54a' }}>🪙 {gold()}</span>
+        </div>
+
+        {/* Stats chips (legacy LEGACY_SPEC §3.1 stats-panel) */}
+        <div
+          style={{
+            display: 'flex',
+            'flex-wrap': 'wrap',
+            gap: '4px',
+            'justify-content': 'center',
+          }}
+        >
+          <StatChip label="HP" value={`${maxHp()}`} color="#ff5050" icon="❤" />
+          <StatChip label="DMG" value={`×${dmgMul().toFixed(2)}`} color="#ffd54a" icon="✕" />
+          <StatChip label="VEL" value={`×${atkSpeedMul().toFixed(2)}`} color="#7be0c4" icon="⚡" />
+          <StatChip
+            label="CRT"
+            value={`${Math.round(critChance() * 100)}%`}
+            color="#ff80ff"
+            icon="◆"
+          />
+          <StatChip label="REG" value={`+${regenPerSec().toFixed(1)}/s`} color="#80e0ff" icon="✦" />
+          <StatChip label="KB" value={`×${knockbackMul().toFixed(2)}`} color="#d0a0a0" icon="✺" />
+          <StatChip label="ORO" value={`×${goldMul().toFixed(2)}`} color="#ffd54a" icon="🪙" />
         </div>
       </div>
 
@@ -280,6 +322,35 @@ export const HudRoot: Component<HudRootProps> = (props) => {
     </>
   )
 }
+
+const StatChip: Component<{ label: string; value: string; color: string; icon: string }> = (
+  props,
+) => (
+  <div
+    style={{
+      display: 'flex',
+      'align-items': 'center',
+      gap: '4px',
+      padding: '2px 8px',
+      background: 'linear-gradient(180deg, rgba(255,42,42,0.10), rgba(0,0,0,0.55))',
+      border: `1.5px solid ${props.color}`,
+      'border-radius': '999px',
+      'font-family': "'Russo One', sans-serif",
+      'font-size': '10px',
+      color: '#fff',
+      'letter-spacing': '0.5px',
+      'text-shadow': '1px 1px 0 #000',
+      'pointer-events': 'none',
+      'white-space': 'nowrap',
+    }}
+  >
+    <span style={{ color: props.color, 'font-size': '9px' }}>{props.icon}</span>
+    <span style={{ color: props.color, 'font-weight': 600, 'font-size': '9px' }}>
+      {props.label}
+    </span>
+    <span style={{ 'font-size': '11px' }}>{props.value}</span>
+  </div>
+)
 
 const SkillSlot: Component<{ slot: SkillSlotState; index: 0 | 1 }> = (props) => {
   const skill = () => (props.slot.skillId ? getSkill(props.slot.skillId) : undefined)

@@ -19,9 +19,9 @@ import { register } from '../registry'
 const RETREAT_BUFFER = 50 // px buffer over attackRange before kiting away
 const ENGAGE_OUTER = 1.4 // multiplier of attackRange beyond which we close in
 /** Hard cap on shooting distance — beyond this they don't even aim, regardless
- *  of the type's attackRange. Roughly the typical camera viewport so they
- *  can't snipe from off-screen. */
-const MAX_FIRE_DIST = 360
+ *  of the type's attackRange. Tightened so kiters can't snipe across the
+ *  whole arena: the player should always see them line up the shot. */
+const MAX_FIRE_DIST = 260
 const PROJECTILE_LIFE_SEC = 2.0
 /** Spear projectile speed (legacy 9 px/frame @60Hz → 540 px/s). */
 const SPEAR_SPEED_PX_SEC = 540
