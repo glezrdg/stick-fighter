@@ -181,20 +181,24 @@ export class NetClient {
    * Wire bus-style listeners on the room and seed `lastSnapshot` from the
    * initial state Colyseus already synced during the `create`/`join` round-trip.
    * Returns that initial snapshot so callers know the connection succeeded.
+   *
+   * The room's `metadata.lobbyCode` is the canonical source of the lobby code
+   * — it's set by the server in `onCreate` and is part of the matchmake
+   * response, so it's available immediately even before the schema state has
+   * synced. The schema's `lobbyCode` field is also kept in sync as a fallback.
    */
   private bindRoom(room: Colyseus.Room): RoomSnapshot {
     this.room = room
-    // After `create()` / `join()` resolves the initial state has already
-    // arrived, so we can read `room.state` immediately. `onStateChange`
-    // will keep firing for every subsequent diff.
-    const initial = stateToSnapshot(room.state as unknown)
+    const meta = (room.metadata ?? {}) as { lobbyCode?: string }
+    const initial = stateToSnapshot(room.state as unknown, meta.lobbyCode)
     this.lastSnapshot = initial
     // Fire listeners with the initial snapshot too — `onStateChange` may
     // not replay the first state if it landed before we registered. Without
     // this the LobbyOverlay never sees any update.
     this.notifyListeners(initial)
     room.onStateChange((state: unknown) => {
-      this.lastSnapshot = stateToSnapshot(state)
+      const m = (room.metadata ?? {}) as { lobbyCode?: string }
+      this.lastSnapshot = stateToSnapshot(state, m.lobbyCode)
       this.notifyListeners(this.lastSnapshot)
     })
     room.onLeave(() => {
@@ -220,7 +224,7 @@ export class NetClient {
  * Colyseus 0.16 hands us a typed Schema instance, but we don't share the
  * schema classes between server + client, so we read by name with `unknown`.
  */
-function stateToSnapshot(state: unknown): RoomSnapshot {
+function stateToSnapshot(state: unknown, lobbyCodeFallback?: string): RoomSnapshot {
   const s = state as {
     lobbyCode?: string
     phase?: 'lobby' | 'playing' | 'gameover'
@@ -278,7 +282,7 @@ function stateToSnapshot(state: unknown): RoomSnapshot {
     })
   }
   return {
-    lobbyCode: s.lobbyCode ?? '',
+    lobbyCode: s.lobbyCode || lobbyCodeFallback || '',
     phase: s.phase ?? 'lobby',
     seed: s.seed ?? 0,
     wave: s.wave ?? 0,
