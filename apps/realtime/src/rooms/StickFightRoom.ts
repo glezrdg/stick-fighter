@@ -175,8 +175,8 @@ export class StickFightRoom extends Room<WorldState> {
     return { sub: null, displayName: options.playerName.trim().slice(0, 20) }
   }
 
-  override onJoin(client: Client, _options: JoinOptions, auth: JoinAuth): void {
-    if (auth === false) return
+  override onJoin(client: Client, _options?: JoinOptions, auth?: JoinAuth): void {
+    if (!auth) return
     const slot = this.state.players.size
     const spawnX = slot === 0 ? ARENA.width / 2 - 60 : ARENA.width / 2 + 60
     const spawnY = ARENA.height / 2

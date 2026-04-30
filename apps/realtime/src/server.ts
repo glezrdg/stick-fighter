@@ -1,5 +1,3 @@
-import './polyfill'
-
 import { createServer } from 'node:http'
 
 import { Server } from '@colyseus/core'

@@ -11,13 +11,13 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@colyseus/core": "^0.16.0",
-    "@colyseus/schema": "^3.0.0",
-    "@colyseus/ws-transport": "^0.16.0",
+    "@colyseus/core": "^0.15.57",
+    "@colyseus/schema": "^2.0.36",
+    "@colyseus/ws-transport": "^0.15.3",
     "@stick/content": "workspace:*",
     "@stick/shared": "workspace:*",
     "@stick/sim": "workspace:*",
-    "colyseus": "^0.16.0",
+    "colyseus": "^0.15.57",
     "cors": "^2.8.5",
     "express": "^4.21.1",
     "jsonwebtoken": "^9.0.2"
