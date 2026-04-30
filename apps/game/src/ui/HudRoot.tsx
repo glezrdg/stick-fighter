@@ -30,6 +30,8 @@ export const HudRoot: Component<HudRootProps> = (props) => {
   const [maxHp, setMaxHp] = createSignal(props.initialMaxHp)
   const [gold, setGold] = createSignal(0)
   const [wave, setWave] = createSignal(0)
+  const [waveTotal, setWaveTotal] = createSignal(0)
+  const [waveAlive, setWaveAlive] = createSignal(0)
   const [slots, setSlots] = createSignal<[SkillSlotState, SkillSlotState]>([
     emptySlot(),
     emptySlot(),
@@ -48,7 +50,15 @@ export const HudRoot: Component<HudRootProps> = (props) => {
     setMaxHp(maxHp)
   })
   const offGold = props.bus.on('gold:changed', ({ gold }) => setGold(gold))
-  const offWave = props.bus.on('wave:start', ({ wave }) => setWave(wave))
+  const offWave = props.bus.on('wave:start', ({ wave, totalEnemies }) => {
+    setWave(wave)
+    setWaveTotal(totalEnemies)
+    setWaveAlive(totalEnemies)
+  })
+  const offWaveEnemies = props.bus.on('wave:enemies:changed', ({ alive, total }) => {
+    setWaveAlive(alive)
+    setWaveTotal(total)
+  })
   const offEquipped = props.bus.on('skills:equipped', ({ slot0, slot1 }) => {
     setSlots([
       { skillId: slot0, cooldownRemaining: 0, cooldownTotal: 1 },
@@ -63,6 +73,7 @@ export const HudRoot: Component<HudRootProps> = (props) => {
     offHp()
     offGold()
     offWave()
+    offWaveEnemies()
     offEquipped()
     offCd()
   })
@@ -120,7 +131,15 @@ export const HudRoot: Component<HudRootProps> = (props) => {
           </span>
         </div>
         <div style={{ display: 'flex', 'justify-content': 'space-between' }}>
-          <span style={{ color: '#ff2a2a', 'font-weight': 700 }}>WAVE {wave()}</span>
+          <span style={{ color: '#ff2a2a', 'font-weight': 700 }}>
+            WAVE {wave()}
+            <Show when={waveTotal() > 0}>
+              <span style={{ color: '#9aa0a6', 'font-weight': 600 }}>
+                {' '}
+                · {waveAlive()}/{waveTotal()}
+              </span>
+            </Show>
+          </span>
           <span style={{ color: '#ffd54a', 'font-weight': 700 }}>GOLD {gold()}</span>
         </div>
       </div>

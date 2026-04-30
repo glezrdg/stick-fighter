@@ -72,6 +72,8 @@ export class ArenaScene extends BaseScene {
   private busUnsubs: Array<() => void> = []
   private activePopups = 0
   private loadout!: RunLoadout
+  private lastAliveCount = -1
+  private currentWaveTotal = 0
 
   constructor(services: ConstructorParameters<typeof BaseScene>[1]) {
     super(ArenaScene.KEY, services)
@@ -155,8 +157,16 @@ export class ArenaScene extends BaseScene {
       }),
       this.bus.on('enemy:death', ({ enemyId, byPlayer }) => this.onEnemyDeath(enemyId, byPlayer)),
       this.bus.on('combat:hit', ({ targetId, dmg, crit }) => this.onCombatHit(targetId, dmg, crit)),
-      this.bus.on('wave:start', ({ wave }) => {
+      this.bus.on('wave:start', ({ wave, totalEnemies }) => {
         this.runState.wave = wave
+        this.currentWaveTotal = totalEnemies
+        this.lastAliveCount = -1
+      }),
+      this.bus.on('ui:pause:toggle', () => {
+        this.runState.paused = !this.runState.paused
+      }),
+      this.bus.on('ui:pause:set', ({ paused }) => {
+        this.runState.paused = paused
       }),
       this.bus.on('wave:complete', ({ wave }) => this.onWaveComplete(wave)),
       this.bus.on('wave:buff:pick', ({ buffId }) => this.onBuffPick(buffId)),
@@ -164,6 +174,7 @@ export class ArenaScene extends BaseScene {
     )
 
     this.input.keyboard?.on('keydown-ESC', () => this.endRun('quit'))
+    this.input.keyboard?.on('keydown-P', () => this.bus.emit('ui:pause:toggle', {}))
 
     // ---- Initial HUD population ----
     this.bus.emit('run:start', { seed: this.runState.seed })
@@ -224,6 +235,13 @@ export class ArenaScene extends BaseScene {
     this.waves.reapDead()
     this.gore.update(dt)
     this.obstacleSys.update(dt)
+
+    // Emit alive-enemies change for HUD wave progress.
+    const alive = this.waves.getEnemies().length
+    if (alive !== this.lastAliveCount) {
+      this.lastAliveCount = alive
+      this.bus.emit('wave:enemies:changed', { alive, total: this.currentWaveTotal })
+    }
 
     // Player & enemy collision against obstacles.
     this.obstacleSys.applyPlayerCollision(this.player)

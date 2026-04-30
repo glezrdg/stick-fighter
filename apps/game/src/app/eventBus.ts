@@ -41,6 +41,8 @@ export type GameEvents = {
   // ---- Waves -------------------------------------------------------
   'wave:start': { wave: number; totalEnemies: number }
   'wave:complete': { wave: number }
+  /** Snapshot emitted whenever the alive enemy count changes (death or spawn). */
+  'wave:enemies:changed': { alive: number; total: number }
   /** Sent right after wave:complete with the 3 (or N) buffs to choose from.
    *  HUD renders a card overlay; user click → emits `wave:buff:pick`. */
   'wave:buff:offer': { wave: number; buffIds: readonly string[] }
@@ -58,6 +60,10 @@ export type GameEvents = {
   'ui:shop:open': Record<string, never>
   'ui:shop:close': Record<string, never>
   'ui:shop:purchase': { itemId: string; cost: number }
+  'ui:pause:toggle': Record<string, never>
+  'ui:pause:set': { paused: boolean }
+  /** Fired by the settings UI after sliders mutate save.settings. */
+  'settings:changed': Record<string, never>
 
   // ---- Input (raw) -------------------------------------------------
   // The InputController emits these. Game systems decide whether they
