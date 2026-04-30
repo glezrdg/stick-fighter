@@ -47,11 +47,42 @@ export async function bootstrapPreGame(
   const seed = opts.seed ?? timeSeed()
   const saveStore = new SaveStore()
   const save = await saveStore.load()
+  applyDevWalletIfLocalhost(save, saveStore)
   return {
     bus: createEventBus(),
     rng: createRng(seed),
     saveStore,
     save,
+  }
+}
+
+/**
+ * Dev-only top-up: when running on localhost / 127.0.0.1, ensure the wallet
+ * has plenty of gold and gems for shop testing. No-op in production builds.
+ * Skipped if `?nocheats=1` is in the URL so a dev can still validate the
+ * "fresh save" experience.
+ */
+function applyDevWalletIfLocalhost(save: SaveCurrent, saveStore: SaveStore): void {
+  if (typeof window === 'undefined') return
+  const host = window.location.hostname
+  const isLocal = host === 'localhost' || host === '127.0.0.1' || host === '0.0.0.0'
+  if (!isLocal) return
+  if (window.location.search.includes('nocheats=1')) return
+
+  const DEV_GOLD = 99_999
+  const DEV_GEMS = 999
+  let mutated = false
+  if (save.gold < DEV_GOLD) {
+    save.gold = DEV_GOLD
+    mutated = true
+  }
+  if (save.gems < DEV_GEMS) {
+    save.gems = DEV_GEMS
+    mutated = true
+  }
+  if (mutated) {
+    void saveStore.save(save)
+    console.info('[dev] localhost wallet topped up — pass ?nocheats=1 to disable')
   }
 }
 

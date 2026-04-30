@@ -8,7 +8,6 @@ import { ArenaScene } from './scenes/ArenaScene'
 import { BootScene } from './scenes/BootScene'
 import { GameOverScene } from './scenes/GameOverScene'
 import { MainMenuScene } from './scenes/MainMenuScene'
-import { NetArenaScene } from './scenes/NetArenaScene'
 import { PreloadScene } from './scenes/PreloadScene'
 import { AudioSystem } from './systems/AudioSystem'
 import { GameOverOverlay } from './ui/GameOverOverlay'
@@ -90,7 +89,6 @@ async function main(): Promise<void> {
       new PreloadScene(servicesRef),
       new MainMenuScene(servicesRef),
       new ArenaScene(servicesRef),
-      new NetArenaScene(servicesRef),
       new GameOverScene(servicesRef),
     ],
   })

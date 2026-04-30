@@ -23,9 +23,6 @@ export class MainMenuScene extends BaseScene {
       this.bus.on('ui:menu:start-run', () => {
         this.scene.start('Arena')
       }),
-      this.bus.on('ui:menu:start-netarena', () => {
-        this.scene.start('NetArena')
-      }),
     )
 
     this.events.once('shutdown', () => this.cleanup())
