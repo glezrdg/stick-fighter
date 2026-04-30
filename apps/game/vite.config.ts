@@ -1,3 +1,4 @@
+/// <reference types="vitest" />
 import { defineConfig } from 'vite'
 import solid from 'vite-plugin-solid'
 
@@ -11,5 +12,10 @@ export default defineConfig({
     outDir: 'dist',
     sourcemap: true,
     target: 'es2022',
+  },
+  test: {
+    globals: false,
+    environment: 'node',
+    include: ['src/**/*.test.{ts,tsx}'],
   },
 })

@@ -11,10 +11,13 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "build": "tsc",
-    "test": "echo \"no tests yet\" && exit 0"
+    "test": "vitest run"
   },
   "dependencies": {
     "@stick/shared": "workspace:*",
     "@stick/content": "workspace:*"
+  },
+  "devDependencies": {
+    "vitest": "^2.1.2"
   }
 }
