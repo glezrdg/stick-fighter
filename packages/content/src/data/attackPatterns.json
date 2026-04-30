@@ -1,0 +1,15 @@
+[
+  { "kind": "slashR", "dmgMul": 1.0, "durFrames": 16, "reach": 95, "knockMul": 1.0 },
+  { "kind": "slashL", "dmgMul": 1.0, "durFrames": 16, "reach": 95, "knockMul": 1.0 },
+  { "kind": "kick", "dmgMul": 1.4, "durFrames": 22, "reach": 78, "knockMul": 2.2 },
+  {
+    "kind": "uppercut",
+    "dmgMul": 1.5,
+    "durFrames": 22,
+    "reach": 80,
+    "knockMul": 2.5,
+    "lift": true
+  },
+  { "kind": "chop", "dmgMul": 1.9, "durFrames": 28, "reach": 105, "knockMul": 1.6 },
+  { "kind": "spin", "dmgMul": 2.2, "durFrames": 36, "reach": 115, "knockMul": 1.8, "all": true }
+]

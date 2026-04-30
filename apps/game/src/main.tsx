@@ -1,7 +1,7 @@
 import Phaser from 'phaser'
 import { render } from 'solid-js/web'
 
-import { bootstrap } from './app/di'
+import { attachInput, bootstrapPreGame, type Services } from './app/di'
 import { InputController } from './core/input/InputController'
 import { ArenaScene } from './scenes/ArenaScene'
 import { BootScene } from './scenes/BootScene'
@@ -13,24 +13,26 @@ import './skills'
 import { HudRoot } from './ui/HudRoot'
 import { JoystickOverlay } from './ui/JoystickOverlay'
 
-// 1. Bootstrap DI (event bus, RNG, save store).
-const services = bootstrap()
+// Phase 1: services that don't need the Phaser canvas.
+const partialServices = bootstrapPreGame()
 
-// 2. Mount the Solid HUD overlay (HUD + virtual joystick visual).
+// Mount the Solid HUD overlay (HUD + virtual joystick visual).
 const hudRoot = document.getElementById('hud-root')
 if (hudRoot) {
   render(
     () => (
       <>
-        <HudRoot bus={services.bus} initialHp={100} initialMaxHp={100} />
-        <JoystickOverlay bus={services.bus} />
+        <HudRoot bus={partialServices.bus} initialHp={100} initialMaxHp={100} />
+        <JoystickOverlay bus={partialServices.bus} />
       </>
     ),
     hudRoot,
   )
 }
 
-// 3. Start Phaser.
+// Construct Phaser. Scenes capture a reference to the partial services object;
+// we mutate it below to add InputController before the first scene.create() fires.
+const servicesRef = partialServices as Services
 const game = new Phaser.Game({
   type: Phaser.WEBGL,
   parent: 'game-canvas-container',
@@ -46,25 +48,25 @@ const game = new Phaser.Game({
     pixelArt: true,
   },
   scene: [
-    new BootScene(services),
-    new PreloadScene(services),
-    new MainMenuScene(services),
-    new ArenaScene(services),
-    new GameOverScene(services),
+    new BootScene(servicesRef),
+    new PreloadScene(servicesRef),
+    new MainMenuScene(servicesRef),
+    new ArenaScene(servicesRef),
+    new GameOverScene(servicesRef),
   ],
 })
 
-// 4. Wire the InputController to Phaser's canvas once it exists.
-const input = new InputController({ canvas: game.canvas, bus: services.bus })
+// Phase 2: attach the InputController. Mutates `partialServices` in place,
+// which is the same object Scenes are holding.
+const input = new InputController({ canvas: game.canvas, bus: partialServices.bus })
+const services = attachInput(partialServices, input)
 
 // Expose for debugging during F1; remove once we have a real debug overlay.
 declare global {
   interface Window {
     __game?: Phaser.Game
-    __services?: typeof services
-    __input?: InputController
+    __services?: Services
   }
 }
 window.__game = game
 window.__services = services
-window.__input = input
