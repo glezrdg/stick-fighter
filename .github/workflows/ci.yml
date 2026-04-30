@@ -28,6 +28,15 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # Internal packages compile to `dist/` (@stick/shared, @stick/content,
+      # @stick/sim). Without this step `pnpm typecheck` would fail on the
+      # downstream packages because their `types` entry points to dist.
+      - name: Build internal packages
+        run: |
+          pnpm --filter @stick/shared build
+          pnpm --filter @stick/content build
+          pnpm --filter @stick/sim build
+
       - name: Format check
         run: pnpm format:check
 

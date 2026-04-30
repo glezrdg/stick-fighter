@@ -73,6 +73,10 @@ async function main() {
     }
     try {
       const rooms = await matchMaker.query({ name: 'stick_fight' })
+      console.info(
+        `[realtime] /lobby/${code} — query returned ${rooms.length} rooms:`,
+        rooms.map((r) => ({ roomId: r.roomId, metadata: r.metadata, clients: r.clients })),
+      )
       const match = rooms.find(
         (r) => (r.metadata as { lobbyCode?: string } | null | undefined)?.lobbyCode === code,
       )
@@ -81,6 +85,25 @@ async function main() {
     } catch (err) {
       console.error('[realtime] /lobby lookup failed:', err)
       return res.status(500).json({ error: 'internal error' })
+    }
+  })
+
+  /** Debug — list all rooms (used to diagnose lobby lookup issues). */
+  app.get('/debug/rooms', async (_req, res) => {
+    try {
+      const rooms = await matchMaker.query({})
+      return res.json({
+        count: rooms.length,
+        rooms: rooms.map((r) => ({
+          roomId: r.roomId,
+          name: r.name,
+          clients: r.clients,
+          locked: r.locked,
+          metadata: r.metadata,
+        })),
+      })
+    } catch (err) {
+      return res.status(500).json({ error: String(err) })
     }
   })
 
