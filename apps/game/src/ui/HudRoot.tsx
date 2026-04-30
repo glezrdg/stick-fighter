@@ -1,4 +1,4 @@
-import { type Component, For, Show, createSignal, onCleanup } from 'solid-js'
+import { type Component, For, Show, createEffect, createSignal, onCleanup } from 'solid-js'
 
 import { type EventBus } from '../app/eventBus'
 import { tryGet as getSkill } from '../skills/registry'
@@ -22,8 +22,10 @@ const emptySlot = (): SkillSlotState => ({
 })
 
 /**
- * HUD overlay rendered on top of the Phaser canvas. Subscribes to the typed
- * event bus — never reads from game systems directly.
+ * HUD overlay — paleta y tipografías matchean LEGACY_SPEC.md secciones 1-3:
+ *   - Russo One para HUD numérico, Black Ops One para banner de oleada
+ *   - Rojo `#ff2a2a` (HP, oleada), dorado `#ffd54a` (oro, combo label)
+ *   - Glows red/gold sobre los bordes de barras y slots
  */
 export const HudRoot: Component<HudRootProps> = (props) => {
   const [hp, setHp] = createSignal(props.initialHp)
@@ -34,6 +36,7 @@ export const HudRoot: Component<HudRootProps> = (props) => {
   const [waveAlive, setWaveAlive] = createSignal(0)
   const [combo, setCombo] = createSignal(0)
   const [maxCombo, setMaxCombo] = createSignal(0)
+  const [waveBanner, setWaveBanner] = createSignal<{ wave: number; key: number } | null>(null)
   const [slots, setSlots] = createSignal<[SkillSlotState, SkillSlotState]>([
     emptySlot(),
     emptySlot(),
@@ -56,6 +59,7 @@ export const HudRoot: Component<HudRootProps> = (props) => {
     setWave(wave)
     setWaveTotal(totalEnemies)
     setWaveAlive(totalEnemies)
+    setWaveBanner({ wave, key: Date.now() })
   })
   const offWaveEnemies = props.bus.on('wave:enemies:changed', ({ alive, total }) => {
     setWaveAlive(alive)
@@ -80,6 +84,14 @@ export const HudRoot: Component<HudRootProps> = (props) => {
     setMaxCombo(0)
   })
 
+  // Auto-hide wave banner after the bannerIn animation finishes.
+  createEffect(() => {
+    const b = waveBanner()
+    if (!b) return
+    const id = setTimeout(() => setWaveBanner(null), 1900)
+    onCleanup(() => clearTimeout(id))
+  })
+
   onCleanup(() => {
     offHp()
     offGold()
@@ -96,113 +108,171 @@ export const HudRoot: Component<HudRootProps> = (props) => {
 
   return (
     <>
+      {/* ---- Top stack: HP bar + wave/gold info ---- */}
       <div
         style={{
           position: 'absolute',
-          top: '12px',
-          left: '12px',
-          right: '12px',
+          top: 'calc(14px + var(--safe-top, 0px))',
+          left: 'calc(14px + var(--safe-left, 0px))',
+          right: 'calc(14px + var(--safe-right, 0px))',
           display: 'flex',
           'flex-direction': 'column',
           gap: '6px',
-          'font-family': 'Inter, system-ui, sans-serif',
-          'font-size': '12px',
-          color: '#fff',
-          'text-shadow': '1px 1px 0 #000',
         }}
       >
+        {/* HP bar */}
         <div
           style={{
             position: 'relative',
-            height: '14px',
-            background: 'rgba(0,0,0,0.7)',
-            border: '1.5px solid #ff2a2a',
-            'border-radius': '4px',
+            height: '18px',
+            background: 'rgba(0, 0, 0, 0.65)',
+            border: '2px solid #ff2a2a',
+            'border-radius': '6px',
             overflow: 'hidden',
+            'box-shadow': '0 0 10px rgba(255, 42, 42, 0.4), 0 2px 6px rgba(0, 0, 0, 0.6)',
           }}
         >
           <div
             style={{
               width: `${hpPct() * 100}%`,
               height: '100%',
-              background: 'linear-gradient(180deg, #ff5050 0%, #c41a1a 100%)',
+              background: 'linear-gradient(180deg, #ff5050 0%, #c41a1a 60%, #8b0000 100%)',
               transition: 'width 0.18s ease-out',
             }}
           />
           <span
+            class="hp-text"
             style={{
               position: 'absolute',
               inset: 0,
               display: 'flex',
               'align-items': 'center',
               'justify-content': 'center',
-              'font-size': '10px',
-              'font-weight': 700,
-              'letter-spacing': '0.5px',
+              'font-family': "'Russo One', sans-serif",
+              'font-size': '12px',
+              'letter-spacing': '1px',
+              color: '#fff',
+              'text-shadow': '1px 1px 0 #000, 0 0 4px #000',
             }}
           >
             {hp()} / {maxHp()}
           </span>
         </div>
-        <div style={{ display: 'flex', 'justify-content': 'space-between' }}>
-          <span style={{ color: '#ff2a2a', 'font-weight': 700 }}>
-            WAVE {wave()}
-            <Show when={waveTotal() > 0}>
-              <span style={{ color: '#9aa0a6', 'font-weight': 600 }}>
-                {' '}
-                · {waveAlive()}/{waveTotal()}
-              </span>
-            </Show>
-          </span>
-          <span style={{ color: '#ffd54a', 'font-weight': 700 }}>GOLD {gold()}</span>
+        {/* Wave / enemies / gold row */}
+        <div
+          style={{
+            display: 'flex',
+            'justify-content': 'space-between',
+            'align-items': 'center',
+            'font-family': "'Russo One', sans-serif",
+            'font-size': '13px',
+            'letter-spacing': '1px',
+            'text-shadow': '1px 1px 0 #000, 0 0 4px #000',
+          }}
+        >
+          <span style={{ color: '#ff2a2a' }}>OLEADA {wave()}</span>
+          <Show when={waveTotal() > 0}>
+            <span style={{ color: '#fff', opacity: 0.9 }}>
+              {waveAlive()} / {waveTotal()}
+            </span>
+          </Show>
+          <span style={{ color: '#ffd54a' }}>🪙 {gold()}</span>
         </div>
       </div>
 
-      {/* Combo counter — center-screen, big when active. */}
+      {/* ---- Wave banner (legacy 256-273) ---- */}
+      <Show when={waveBanner()}>
+        {(b) => (
+          <div
+            style={{
+              position: 'absolute',
+              top: '38%',
+              left: '50%',
+              transform: 'translate(-50%, -50%)',
+              'font-family': "'Black Ops One', 'Impact', sans-serif",
+              'font-size': 'clamp(28px, 9vw, 44px)',
+              'letter-spacing': 'clamp(3px, 1.5vw, 6px)',
+              'background-image': 'linear-gradient(180deg, #ffd54a 0%, #ffffff 50%, #ff2a2a 100%)',
+              '-webkit-background-clip': 'text',
+              'background-clip': 'text',
+              color: 'transparent',
+              'pointer-events': 'none',
+              'text-shadow': 'none',
+              filter: 'drop-shadow(2px 2px 0 #000) drop-shadow(0 0 12px rgba(255,42,42,0.6))',
+              animation: 'bannerIn 1.8s ease-out forwards',
+            }}
+            data-key={b().key}
+          >
+            ¡OLEADA {b().wave}!
+          </div>
+        )}
+      </Show>
+
+      {/* ---- Combo counter — top-right (legacy combo box 114-143) ---- */}
       <Show when={combo() >= 2}>
         <div
           style={{
             position: 'absolute',
-            top: '90px',
-            left: '50%',
-            transform: 'translateX(-50%)',
-            'font-family': 'Inter, system-ui, sans-serif',
-            'font-size': `${20 + Math.min(28, combo() * 2)}px`,
-            'font-weight': 800,
-            color: combo() >= 10 ? '#ff5050' : combo() >= 5 ? '#ffd54a' : '#fff',
-            'text-shadow': '2px 2px 0 #000',
+            top: 'clamp(72px, 14%, 22%)',
+            right: 'calc(14px + var(--safe-right, 0px))',
+            'text-align': 'right',
             'pointer-events': 'none',
-            'letter-spacing': '2px',
-            transition: 'font-size 0.12s ease-out',
           }}
         >
-          {combo()}× COMBO
+          <div
+            style={{
+              'font-family': "'Black Ops One', 'Impact', sans-serif",
+              'font-size': `${36 + Math.min(28, combo() * 2)}px`,
+              'line-height': 1,
+              color: combo() >= 10 ? '#ff2a2a' : '#ff5050',
+              'letter-spacing': '-1px',
+              'text-shadow': '3px 3px 0 #000, 0 0 12px rgba(255, 42, 42, 0.7), 0 0 4px #000',
+              transition: 'font-size 0.1s ease-out',
+            }}
+          >
+            {combo()}
+          </div>
+          <div
+            style={{
+              'font-family': "'Russo One', sans-serif",
+              'font-size': 'clamp(11px, 3vw, 14px)',
+              color: '#ffd54a',
+              'letter-spacing': '4px',
+              'text-shadow': '2px 2px 0 #000',
+              'margin-top': '2px',
+            }}
+          >
+            HITS
+          </div>
         </div>
       </Show>
 
+      {/* Max combo chip — only shown when 5+ achieved */}
       <Show when={maxCombo() >= 5}>
         <div
           style={{
             position: 'absolute',
-            top: '52px',
-            right: '12px',
-            'font-family': 'Inter, system-ui, sans-serif',
+            top: '60px',
+            left: 'calc(14px + var(--safe-left, 0px))',
+            'font-family': "'Russo One', sans-serif",
             'font-size': '11px',
             color: '#ffd54a',
-            'text-shadow': '1px 1px 0 #000',
-            opacity: 0.85,
+            'letter-spacing': '2px',
+            'text-shadow': '1px 1px 0 #000, 0 0 4px #000',
             'pointer-events': 'none',
+            opacity: 0.9,
           }}
         >
           MAX {maxCombo()}×
         </div>
       </Show>
 
+      {/* ---- Skill slots — bottom right ---- */}
       <div
         style={{
           position: 'absolute',
-          bottom: '14px',
-          right: '14px',
+          bottom: 'calc(14px + var(--safe-bottom, 0px))',
+          right: 'calc(14px + var(--safe-right, 0px))',
           display: 'flex',
           gap: '8px',
         }}
@@ -226,29 +296,41 @@ const SkillSlot: Component<{ slot: SkillSlotState; index: 0 | 1 }> = (props) => 
     <div
       style={{
         position: 'relative',
-        width: '54px',
-        height: '54px',
-        background: 'rgba(0,0,0,0.7)',
-        border: `2px solid ${ready() ? '#ffd54a' : '#404850'}`,
-        'border-radius': '8px',
+        width: '56px',
+        height: '56px',
+        background: ready()
+          ? 'radial-gradient(circle at 50% 35%, #555 0%, #222 100%)'
+          : 'radial-gradient(circle at 50% 35%, #2a2a2a 0%, #111 100%)',
+        border: `3px solid ${ready() ? '#ffd54a' : '#888'}`,
+        'border-radius': '50%',
         display: 'flex',
         'align-items': 'center',
         'justify-content': 'center',
-        'font-family': 'Inter, system-ui, sans-serif',
+        'box-shadow': ready()
+          ? '0 0 16px rgba(255, 213, 74, 0.8), inset 0 1px 0 rgba(255,255,255,0.15)'
+          : '0 2px 6px rgba(0, 0, 0, 0.7), inset 0 1px 0 rgba(255,255,255,0.05)',
         overflow: 'hidden',
+        transition: 'box-shadow 0.15s ease-out',
       }}
     >
       <Show
         when={skill()}
         fallback={
-          <span style={{ color: '#404850', 'font-size': '20px', 'font-weight': 700 }}>
+          <span
+            style={{
+              'font-family': "'Russo One', sans-serif",
+              color: '#888',
+              'font-size': '18px',
+              'letter-spacing': '1px',
+            }}
+          >
             {props.index === 0 ? 'Q' : 'E'}
           </span>
         }
       >
-        <span style={{ 'font-size': '26px' }}>{skill()!.icon ?? '?'}</span>
+        <span style={{ 'font-size': '28px' }}>{skill()!.icon ?? '?'}</span>
       </Show>
-      {/* Cooldown wipe (top-down). */}
+      {/* Cooldown wipe (top-down) */}
       <div
         style={{
           position: 'absolute',
@@ -256,19 +338,41 @@ const SkillSlot: Component<{ slot: SkillSlotState; index: 0 | 1 }> = (props) => 
           left: 0,
           right: 0,
           height: `${cdPct() * 100}%`,
-          background: 'rgba(0, 0, 0, 0.65)',
+          background: 'rgba(0, 0, 0, 0.7)',
           'pointer-events': 'none',
         }}
       />
+      <Show when={!ready()}>
+        <span
+          style={{
+            position: 'absolute',
+            inset: 0,
+            display: 'flex',
+            'align-items': 'center',
+            'justify-content': 'center',
+            'font-family': "'Russo One', sans-serif",
+            color: '#fff',
+            'font-size': '14px',
+            'text-shadow': '1px 1px 0 #000',
+            'pointer-events': 'none',
+          }}
+        >
+          {props.slot.cooldownRemaining.toFixed(1)}
+        </span>
+      </Show>
+      {/* Slot key label */}
       <span
         style={{
           position: 'absolute',
           bottom: '2px',
-          right: '4px',
-          color: '#fff',
+          right: '6px',
+          'font-family': "'Russo One', sans-serif",
+          color: '#ffd54a',
           'font-size': '9px',
+          'letter-spacing': '1px',
           'text-shadow': '1px 1px 0 #000',
-          opacity: 0.7,
+          opacity: 0.85,
+          'pointer-events': 'none',
         }}
       >
         {props.index === 0 ? 'Q' : 'E'}

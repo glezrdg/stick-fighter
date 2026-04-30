@@ -7,7 +7,26 @@
       content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover"
     />
     <title>Stick Fighter</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Russo+One&family=Black+Ops+One&family=Inter:wght@600;800;900&display=swap"
+      rel="stylesheet"
+    />
     <style>
+      :root {
+        --red: #ff2a2a;
+        --red-dark: #8b0000;
+        --red-deep: #4a0000;
+        --gold: #ffd54a;
+        --gold-dark: #b8860b;
+        --bg-1: #1a1f24;
+        --bg-2: #0e1317;
+        --safe-top: env(safe-area-inset-top, 0px);
+        --safe-bottom: env(safe-area-inset-bottom, 0px);
+        --safe-left: env(safe-area-inset-left, 0px);
+        --safe-right: env(safe-area-inset-right, 0px);
+      }
       * {
         box-sizing: border-box;
         margin: 0;
@@ -20,7 +39,7 @@
         overflow: hidden;
         background: #000;
         color: #fff;
-        font-family: 'Inter', system-ui, sans-serif;
+        font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
       }
       #app {
         position: relative;
@@ -40,9 +59,83 @@
         inset: 0;
         pointer-events: none;
         z-index: 5;
+        font-family: 'Russo One', 'Inter', sans-serif;
       }
       #hud-root > * {
         pointer-events: auto;
+      }
+
+      /* ---- Damage popup keyframes (legacy lines 288-292) ---- */
+      @keyframes dmgFloat {
+        0% {
+          opacity: 0;
+          transform: translate(0, 0) scale(0.5);
+        }
+        25% {
+          opacity: 1;
+          transform: translate(0, -8px) scale(1.2);
+        }
+        100% {
+          opacity: 0;
+          transform: translate(0, -36px) scale(1);
+        }
+      }
+      /* ---- Wave banner enter (legacy 269-273) ---- */
+      @keyframes bannerIn {
+        0% {
+          opacity: 0;
+          transform: translate(-50%, -20px) scale(0.7);
+        }
+        20% {
+          opacity: 1;
+          transform: translate(-50%, 0) scale(1);
+        }
+        80% {
+          opacity: 1;
+          transform: translate(-50%, 0) scale(1);
+        }
+        100% {
+          opacity: 0;
+          transform: translate(-50%, 10px) scale(1);
+        }
+      }
+      /* ---- Defeat title animation (legacy 399-403) ---- */
+      @keyframes defeatIn {
+        0% {
+          opacity: 0;
+          transform: scale(2) rotate(-10deg);
+        }
+        60% {
+          opacity: 1;
+          transform: scale(1) rotate(0);
+        }
+        100% {
+          opacity: 1;
+          transform: scale(1) rotate(0);
+        }
+      }
+      /* ---- Tutorial enter (legacy 574-577) ---- */
+      @keyframes tutFade {
+        0% {
+          opacity: 0;
+          transform: translate(-50%, -10px);
+        }
+        100% {
+          opacity: 1;
+          transform: translate(-50%, 0);
+        }
+      }
+      /* ---- Combo bump (legacy 139-143) ---- */
+      @keyframes comboBump {
+        0% {
+          transform: translateX(-50%) scale(1);
+        }
+        40% {
+          transform: translateX(-50%) scale(1.25);
+        }
+        100% {
+          transform: translateX(-50%) scale(1);
+        }
       }
     </style>
   </head>

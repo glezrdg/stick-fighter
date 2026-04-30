@@ -64,6 +64,12 @@ export type GameEvents = {
   'ui:pause:set': { paused: boolean }
   /** Fired by the settings UI after sliders mutate save.settings. */
   'settings:changed': Record<string, never>
+  /** Phaser scenes notify the Solid layer which screen to render. */
+  'ui:scene:enter': { name: 'menu' | 'arena' | 'gameover' }
+  /** User pressed "PLAY" in the Solid MainMenu — Phaser starts ArenaScene. */
+  'ui:menu:start-run': Record<string, never>
+  /** User pressed "BACK" in GameOver — Phaser switches to MainMenu. */
+  'ui:menu:return': Record<string, never>
 
   // ---- Input (raw) -------------------------------------------------
   // The InputController emits these. Game systems decide whether they

@@ -11,8 +11,10 @@ import { PreloadScene } from './scenes/PreloadScene'
 import { AudioSystem } from './systems/AudioSystem'
 // Side-effect: every skill registers itself into the registry on import.
 import './skills'
+import { GameOverOverlay } from './ui/GameOverOverlay'
 import { HudRoot } from './ui/HudRoot'
 import { JoystickOverlay } from './ui/JoystickOverlay'
+import { MainMenuOverlay } from './ui/MainMenuOverlay'
 import { PauseMenu } from './ui/PauseMenu'
 import { ShopOverlay } from './ui/ShopOverlay'
 import { TutorialOverlay } from './ui/TutorialOverlay'
@@ -52,6 +54,8 @@ async function main(): Promise<void> {
             getSave={() => partialServices.save}
           />
           <TutorialOverlay bus={partialServices.bus} getSave={() => partialServices.save} />
+          <MainMenuOverlay bus={partialServices.bus} getSave={() => partialServices.save} />
+          <GameOverOverlay bus={partialServices.bus} getSave={() => partialServices.save} />
         </>
       ),
       hudRoot,

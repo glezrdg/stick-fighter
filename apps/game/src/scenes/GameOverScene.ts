@@ -6,74 +6,36 @@ interface GameOverData {
   runState?: RunState
 }
 
+/**
+ * Empty Phaser scene — actual GameOver UI rendered by `GameOverOverlay` (Solid).
+ * Listens for retry / return events to navigate back.
+ */
 export class GameOverScene extends BaseScene {
   static readonly KEY = 'GameOver'
 
-  private summary: RunState | undefined = undefined
+  private busUnsubs: Array<() => void> = []
 
   constructor(services: ConstructorParameters<typeof BaseScene>[1]) {
     super(GameOverScene.KEY, services)
   }
 
-  init(data: GameOverData): void {
-    this.summary = data.runState
-  }
+  init(_data: GameOverData): void {}
 
   create(): void {
-    const { width, height } = this.scale
-    const cx = width / 2
-    const cy = height / 2
+    this.cameras.main.setBackgroundColor('#000')
+    this.bus.emit('ui:scene:enter', { name: 'gameover' })
 
-    this.add
-      .text(cx, cy - 60, 'GAME OVER', {
-        fontFamily: 'Inter, system-ui, sans-serif',
-        fontSize: '52px',
-        fontStyle: 'bold',
-        color: '#ff2a2a',
-      })
-      .setOrigin(0.5)
+    this.busUnsubs.push(
+      this.bus.on('ui:menu:start-run', () => this.scene.start('Arena')),
+      this.bus.on('ui:menu:return', () => this.scene.start('MainMenu')),
+    )
 
-    if (this.summary) {
-      const save = this.services.save
-      this.add
-        .text(
-          cx,
-          cy + 4,
-          `Wave ${this.summary.wave}   ·   Kills ${this.summary.kills}   ·   +${this.summary.gold} 🪙`,
-          {
-            fontFamily: 'Inter, system-ui, sans-serif',
-            fontSize: '16px',
-            color: '#ffd54a',
-          },
-        )
-        .setOrigin(0.5)
-      this.add
-        .text(cx, cy + 28, `Total: 🪙 ${save.gold}   ·   Best wave: ${save.bestWave}`, {
-          fontFamily: 'Inter, system-ui, sans-serif',
-          fontSize: '12px',
-          color: '#9aa0a6',
-        })
-        .setOrigin(0.5)
-    }
+    this.events.once('shutdown', () => this.cleanup())
+    this.events.once('destroy', () => this.cleanup())
+  }
 
-    const restart = this.add
-      .text(cx, cy + 80, 'TAP / SPACE para reintentar', {
-        fontFamily: 'Inter, system-ui, sans-serif',
-        fontSize: '16px',
-        color: '#ffffff',
-      })
-      .setOrigin(0.5)
-    this.tweens.add({
-      targets: restart,
-      alpha: 0.4,
-      duration: 700,
-      yoyo: true,
-      repeat: -1,
-      ease: 'Sine.easeInOut',
-    })
-
-    const back = () => this.scene.start('MainMenu')
-    this.input.once('pointerdown', back)
-    this.input.keyboard?.once('keydown-SPACE', back)
+  private cleanup(): void {
+    for (const off of this.busUnsubs) off()
+    this.busUnsubs = []
   }
 }

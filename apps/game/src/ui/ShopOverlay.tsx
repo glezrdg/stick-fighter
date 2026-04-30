@@ -17,13 +17,16 @@ interface ShopOverlayProps {
 type Tab = 'weapons' | 'skills' | 'cosmetics'
 
 /**
- * Shop overlay. Opens via `ui:shop:open`, closes via `ui:shop:close` or its
- * own close button. Persists changes through the SaveStore on every action.
+ * Shop overlay — paleta del legacy (LEGACY_SPEC §5.2):
+ *   - Cards con border `#5a3030`, gradient red 0.05 → black 0.5
+ *   - Equipped: border var(--gold), glow dorado
+ *   - Owned: border #4caf50, glow verde
+ *   - Tabs activas con bg red gradient + glow rojo
  */
 export const ShopOverlay: Component<ShopOverlayProps> = (props) => {
   const [open, setOpen] = createSignal(false)
   const [tab, setTab] = createSignal<Tab>('weapons')
-  const [, setRev] = createSignal(0) // bump to re-render after a mutation
+  const [, setRev] = createSignal(0)
 
   const persist = () => {
     setRev((r) => r + 1)
@@ -37,15 +40,12 @@ export const ShopOverlay: Component<ShopOverlayProps> = (props) => {
     offClose()
   })
 
-  const close = () => {
-    props.bus.emit('ui:shop:close', {})
-  }
+  const close = () => props.bus.emit('ui:shop:close', {})
 
   const buyOrUpgradeWeapon = (w: Weapon) => {
     const save = props.getSave()
     const owned = save.cosmetics.sword.owned.includes(w.id)
     if (!owned) {
-      // First buy → unlock at level 1.
       if (save.gold < w.cost) return
       save.gold -= w.cost
       save.cosmetics.sword.owned.push(w.id)
@@ -53,7 +53,6 @@ export const ShopOverlay: Component<ShopOverlayProps> = (props) => {
       persist()
       return
     }
-    // Already owned → level up.
     const level = save.weaponLevels[w.id] ?? 1
     if (level >= 20) return
     const cost = BuffSystem.weaponUpgradeCost(level)
@@ -87,7 +86,6 @@ export const ShopOverlay: Component<ShopOverlayProps> = (props) => {
     if (idx !== -1) {
       eq.splice(idx, 1)
     } else {
-      // Only active skills get an equipped slot. Cap at 2.
       const skill = allSkills().find((s) => s.id === id)
       if (!skill || skill.kind !== 'active') return
       if (eq.length >= 2) eq.shift()
@@ -106,17 +104,19 @@ export const ShopOverlay: Component<ShopOverlayProps> = (props) => {
         style={{
           position: 'absolute',
           inset: 0,
-          background: 'rgba(0, 0, 0, 0.85)',
+          background:
+            'radial-gradient(ellipse at 50% 30%, rgba(255, 42, 42, 0.18) 0%, transparent 60%), linear-gradient(180deg, #1a0f0f 0%, #000 100%)',
           display: 'flex',
           'flex-direction': 'column',
           'align-items': 'center',
           padding: '20px 12px',
           'pointer-events': 'auto',
           'z-index': 20,
-          'font-family': 'Inter, system-ui, sans-serif',
+          'font-family': "'Russo One', sans-serif",
           color: '#fff',
         }}
       >
+        {/* Header — title + gold + close */}
         <div
           style={{
             display: 'flex',
@@ -124,52 +124,83 @@ export const ShopOverlay: Component<ShopOverlayProps> = (props) => {
             'align-items': 'center',
             width: '100%',
             'max-width': '480px',
-            'margin-bottom': '12px',
+            'margin-bottom': '14px',
           }}
         >
-          <div style={{ 'font-size': '24px', 'font-weight': 800, color: '#ffd54a' }}>🛒 TIENDA</div>
-          <div style={{ 'font-size': '14px', color: '#ffd54a' }}>🪙 {props.getSave().gold}</div>
+          <div
+            style={{
+              'font-family': "'Black Ops One', 'Impact', sans-serif",
+              'font-size': '24px',
+              color: '#ffd54a',
+              'letter-spacing': '3px',
+              'text-shadow': '2px 2px 0 #000, 0 0 12px rgba(255,213,74,0.4)',
+            }}
+          >
+            🛒 TIENDA
+          </div>
+          <div
+            style={{
+              'font-family': "'Russo One', sans-serif",
+              'font-size': '16px',
+              color: '#ffd54a',
+              'letter-spacing': '1px',
+              'text-shadow': '1px 1px 0 #000',
+            }}
+          >
+            🪙 {props.getSave().gold}
+          </div>
           <button
             type="button"
             onClick={close}
             style={{
-              background: 'transparent',
-              color: '#fff',
-              border: '1px solid #404850',
-              'border-radius': '4px',
-              padding: '4px 10px',
+              background: 'rgba(255, 42, 42, 0.15)',
+              border: '2px solid #ff2a2a',
+              color: '#ff2a2a',
+              width: '32px',
+              height: '32px',
+              'font-size': '16px',
+              'font-weight': 900,
+              'border-radius': '50%',
               cursor: 'pointer',
+              'box-shadow': '0 0 8px rgba(255, 42, 42, 0.4)',
             }}
           >
             ✕
           </button>
         </div>
 
-        <div style={{ display: 'flex', gap: '6px', 'margin-bottom': '12px' }}>
+        {/* Tabs */}
+        <div style={{ display: 'flex', gap: '6px', 'margin-bottom': '14px' }}>
           <For each={['weapons', 'skills', 'cosmetics'] as const}>
             {(t) => (
               <button
                 type="button"
                 onClick={() => setTab(t)}
                 style={{
-                  background: tab() === t ? '#ffd54a' : 'rgba(0,0,0,0.5)',
-                  color: tab() === t ? '#000' : '#fff',
-                  border: '1px solid #404850',
-                  'border-radius': '4px',
-                  padding: '6px 14px',
+                  background:
+                    tab() === t
+                      ? 'linear-gradient(180deg, rgba(255, 42, 42, 0.3), rgba(139, 0, 0, 0.4))'
+                      : 'linear-gradient(180deg, #2a2a2a, #0a0a0a)',
+                  color: tab() === t ? '#fff' : '#aaa',
+                  border: tab() === t ? '2px solid #ff2a2a' : '2px solid #444',
+                  'border-radius': '8px',
+                  padding: '8px 16px',
                   cursor: 'pointer',
+                  'font-family': "'Russo One', sans-serif",
                   'font-size': '12px',
-                  'font-weight': 700,
-                  'letter-spacing': '1px',
+                  'letter-spacing': '2px',
                   'text-transform': 'uppercase',
+                  'box-shadow': tab() === t ? '0 0 14px rgba(255, 42, 42, 0.4)' : 'none',
+                  'text-shadow': '1px 1px 0 #000',
                 }}
               >
-                {t}
+                {t === 'weapons' ? 'ESPADAS' : t === 'skills' ? 'HABILIDADES' : 'AURAS'}
               </button>
             )}
           </For>
         </div>
 
+        {/* Content */}
         <div
           style={{
             width: '100%',
@@ -179,6 +210,7 @@ export const ShopOverlay: Component<ShopOverlayProps> = (props) => {
             display: 'flex',
             'flex-direction': 'column',
             gap: '8px',
+            'padding-right': '4px',
           }}
         >
           <Show when={tab() === 'weapons'}>
@@ -195,30 +227,27 @@ export const ShopOverlay: Component<ShopOverlayProps> = (props) => {
                   <ShopRow
                     icon="⚔️"
                     title={`${w.name}${owned() ? ` Lv.${level()}` : ''}`}
-                    desc={`Daño base ${w.dmg.toFixed(1)} · Atk ${(w.atkSpeed * 100).toFixed(0)}%`}
-                    primary={
+                    desc={`Daño ${w.dmg.toFixed(1)} · Atk ${(w.atkSpeed * 100).toFixed(0)}%`}
+                    state={equipped() ? 'equipped' : owned() ? 'owned' : 'locked'}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => buyOrUpgradeWeapon(w)}
+                      disabled={!canAfford() || (owned() && level() >= 20)}
+                      style={shopBtn(canAfford() && !(owned() && level() >= 20))}
+                    >
+                      {owned() ? `MEJORAR 🪙${cost()}` : `COMPRAR 🪙${cost()}`}
+                    </button>
+                    <Show when={owned() && !equipped()}>
                       <button
                         type="button"
-                        onClick={() => buyOrUpgradeWeapon(w)}
-                        disabled={!canAfford() || (owned() && level() >= 20)}
-                        style={shopBtn(canAfford() && !(owned() && level() >= 20))}
+                        onClick={() => equipWeapon(w)}
+                        style={shopBtn(true, true)}
                       >
-                        {owned() ? `Mejorar 🪙${cost()}` : `Comprar 🪙${cost()}`}
+                        EQUIPAR
                       </button>
-                    }
-                    secondary={
-                      <Show when={owned()}>
-                        <button
-                          type="button"
-                          onClick={() => equipWeapon(w)}
-                          disabled={equipped()}
-                          style={shopBtn(!equipped(), true)}
-                        >
-                          {equipped() ? 'Equipada' : 'Equipar'}
-                        </button>
-                      </Show>
-                    }
-                  />
+                    </Show>
+                  </ShopRow>
                 )
               }}
             </For>
@@ -234,42 +263,51 @@ export const ShopOverlay: Component<ShopOverlayProps> = (props) => {
                 return (
                   <ShopRow
                     icon={s.icon ?? '✦'}
-                    title={`${s.name} ${s.kind === 'passive' ? '· pasiva' : ''}`}
+                    title={`${s.name}${s.kind === 'passive' ? ' · pasiva' : ''}`}
                     desc={s.desc}
-                    primary={
-                      <Show
-                        when={!owned()}
-                        fallback={
-                          <Show when={s.kind === 'active'}>
-                            <button
-                              type="button"
-                              onClick={() => toggleEquip(s.id)}
-                              style={shopBtn(true, equipped())}
-                            >
-                              {equipped() ? 'Desequipar' : 'Equipar'}
-                            </button>
-                          </Show>
-                        }
+                    state={equipped() ? 'equipped' : owned() ? 'owned' : 'locked'}
+                  >
+                    <Show
+                      when={!owned()}
+                      fallback={
+                        <Show when={s.kind === 'active'}>
+                          <button
+                            type="button"
+                            onClick={() => toggleEquip(s.id)}
+                            style={shopBtn(true, equipped())}
+                          >
+                            {equipped() ? 'DESEQUIPAR' : 'EQUIPAR'}
+                          </button>
+                        </Show>
+                      }
+                    >
+                      <button
+                        type="button"
+                        onClick={() => buySkill(s.id, s.cost)}
+                        disabled={!canAfford()}
+                        style={shopBtn(canAfford())}
                       >
-                        <button
-                          type="button"
-                          onClick={() => buySkill(s.id, s.cost)}
-                          disabled={!canAfford()}
-                          style={shopBtn(canAfford())}
-                        >
-                          Comprar 🪙{s.cost}
-                        </button>
-                      </Show>
-                    }
-                  />
+                        COMPRAR 🪙{s.cost}
+                      </button>
+                    </Show>
+                  </ShopRow>
                 )
               }}
             </For>
           </Show>
 
           <Show when={tab() === 'cosmetics'}>
-            <div style={{ opacity: 0.6, 'text-align': 'center', padding: '20px' }}>
-              Skins / auras próximamente — F2.5.
+            <div
+              style={{
+                'text-align': 'center',
+                padding: '40px 20px',
+                color: '#aaa',
+                'font-size': '13px',
+                'font-family': "'Russo One', sans-serif",
+                'letter-spacing': '2px',
+              }}
+            >
+              AURAS Y SKINS — PRÓXIMAMENTE
             </div>
           </Show>
         </div>
@@ -282,42 +320,80 @@ const ShopRow: Component<{
   icon: string
   title: string
   desc: string
-  primary: unknown
-  secondary?: unknown
-}> = (props) => (
-  <div
-    style={{
-      display: 'flex',
-      'align-items': 'center',
-      gap: '10px',
-      padding: '10px',
-      background: 'rgba(20, 24, 30, 0.95)',
-      border: '1px solid #404850',
-      'border-radius': '6px',
-    }}
-  >
-    <div style={{ 'font-size': '28px' }}>{props.icon}</div>
-    <div style={{ flex: 1, 'min-width': 0 }}>
-      <div style={{ 'font-weight': 700, 'font-size': '13px' }}>{props.title}</div>
-      <div style={{ 'font-size': '11px', opacity: 0.75 }}>{props.desc}</div>
-    </div>
-    <div style={{ display: 'flex', gap: '6px', 'flex-direction': 'column' }}>
-      {props.primary as never}
-      {props.secondary as never}
-    </div>
-  </div>
-)
+  state: 'equipped' | 'owned' | 'locked'
+  children?: unknown
+}> = (props) => {
+  const borderColor = () =>
+    props.state === 'equipped' ? '#ffd54a' : props.state === 'owned' ? '#4caf50' : '#5a3030'
+  const glow = () =>
+    props.state === 'equipped'
+      ? '0 0 14px rgba(255, 213, 74, 0.5)'
+      : props.state === 'owned'
+        ? '0 0 8px rgba(76, 175, 80, 0.3)'
+        : 'none'
 
-function shopBtn(enabled: boolean, equipped = false): Record<string, string | number> {
+  return (
+    <div
+      style={{
+        display: 'flex',
+        'align-items': 'center',
+        gap: '12px',
+        padding: '12px',
+        background: 'linear-gradient(180deg, rgba(255, 42, 42, 0.05), rgba(0, 0, 0, 0.5))',
+        border: `2px solid ${borderColor()}`,
+        'border-radius': '12px',
+        'box-shadow': glow(),
+      }}
+    >
+      <div style={{ 'font-size': '32px' }}>{props.icon}</div>
+      <div style={{ flex: 1, 'min-width': 0 }}>
+        <div
+          style={{
+            'font-family': "'Russo One', sans-serif",
+            'font-size': '15px',
+            color: '#ffd54a',
+            'letter-spacing': '1px',
+            'text-shadow': '1px 1px 0 #000',
+          }}
+        >
+          {props.title}
+        </div>
+        <div
+          style={{
+            'font-family': "'Inter', sans-serif",
+            'font-weight': 600,
+            'font-size': '12px',
+            color: '#d0c0c0',
+            'margin-top': '2px',
+          }}
+        >
+          {props.desc}
+        </div>
+      </div>
+      <div style={{ display: 'flex', gap: '6px', 'flex-direction': 'column' }}>
+        {props.children as never}
+      </div>
+    </div>
+  )
+}
+
+function shopBtn(enabled: boolean, equipped = false): Record<string, string> {
   return {
-    background: !enabled ? '#2a2f35' : equipped ? '#7be0c4' : '#ffd54a',
-    color: enabled ? '#000' : '#666',
-    border: 'none',
-    'border-radius': '4px',
-    padding: '6px 12px',
+    background: !enabled
+      ? 'linear-gradient(180deg, #2a2a2a, #1a1a1a)'
+      : equipped
+        ? 'linear-gradient(180deg, #4caf50, #2e7d32)'
+        : 'linear-gradient(180deg, #ff3030, #8b0000)',
+    color: enabled ? '#fff' : '#666',
+    border: equipped ? '2px solid #ffd54a' : enabled ? '2px solid #ffd54a' : '2px solid #555',
+    'border-radius': '8px',
+    padding: '8px 12px',
     cursor: enabled ? 'pointer' : 'default',
+    'font-family': "'Russo One', sans-serif",
     'font-size': '11px',
-    'font-weight': '700',
+    'letter-spacing': '2px',
     'white-space': 'nowrap',
+    'text-shadow': '1px 1px 0 #000',
+    'box-shadow': enabled ? '0 3px 0 rgba(0, 0, 0, 0.6), 0 0 10px rgba(255, 42, 42, 0.3)' : 'none',
   }
 }

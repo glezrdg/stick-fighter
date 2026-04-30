@@ -153,15 +153,8 @@ export class ArenaScene extends BaseScene {
     this.stickman = new StickmanRenderer()
 
     // ---- Arena visuals ----
-    this.add
-      .rectangle(ARENA.width / 2, ARENA.height / 2, ARENA.width, ARENA.height, 0x1a1f24)
-      .setStrokeStyle(2, 0x404850)
-    const grid = this.add.graphics()
-    grid.lineStyle(1, 0x2a3038, 0.5)
-    for (let x = 0; x <= ARENA.width; x += 60) grid.lineBetween(x, 0, x, ARENA.height)
-    for (let y = 0; y <= ARENA.height; y += 60) grid.lineBetween(0, y, ARENA.width, y)
-
-    // Arena props (fans, lamps, pipes) are below everything — generated once.
+    // Industrial floor (legacy 2076-2105). Bright concrete-grey gradient with
+    // metal grid + rivets — the player and stickmen pop dark against it.
     this.arenaProps = ArenaPropsRenderer.generate({ width: ARENA.width, height: ARENA.height })
     this.arenaPropsGraphics = this.add.graphics()
 
@@ -179,6 +172,8 @@ export class ArenaScene extends BaseScene {
     this.cameras.main.setBounds(0, 0, ARENA.width, ARENA.height)
     this.cameras.main.setZoom(CAM_ZOOM)
     this.cameras.main.startFollow(this.playerGraphics, true, 0.15, 0.15)
+    // Off-arena background (the area outside the playable rect when camera
+    // shows beyond the bounds) — keep the same dark fill.
     this.cameras.main.setBackgroundColor('#0e1317')
 
     // ---- Bus wiring ----
@@ -218,6 +213,7 @@ export class ArenaScene extends BaseScene {
     this.input.keyboard?.on('keydown-P', () => this.bus.emit('ui:pause:toggle', {}))
 
     // ---- Initial HUD population ----
+    this.bus.emit('ui:scene:enter', { name: 'arena' })
     this.bus.emit('run:start', { seed: this.runState.seed })
     this.bus.emit('gold:changed', { gold: this.runState.gold, delta: 0 })
     this.bus.emit('player:hp:changed', { hp: this.player.hp, maxHp: this.player.maxHp })
