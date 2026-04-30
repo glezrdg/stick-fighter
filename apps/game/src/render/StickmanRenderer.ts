@@ -1,5 +1,7 @@
-import type { AttackKind } from '@stick/content'
+import type { AttackKind, WeaponShape } from '@stick/content'
 import type Phaser from 'phaser'
+
+import { WeaponRenderer } from './WeaponRenderer'
 
 /** Geometry constants extracted from the legacy drawStickman (see plan agent report). */
 export const STICKMAN_GEOMETRY = {
@@ -102,6 +104,8 @@ export interface StickmanRenderState {
   iframes: number
   /** Optional body color override (player defaults to black, enemies to per-type color). */
   color?: number
+  /** Optional equipped weapon — drawn in the swinging hand. */
+  weapon?: { shape: WeaponShape; blade: number }
 }
 
 const DEFAULT_COLOR = 0x000000
@@ -293,6 +297,40 @@ export class StickmanRenderer {
     }
   }
 
+  /** Translates the canvas to (handX, handY), rotates so blade points along
+   *  the swing angle, and draws the weapon. Restores after. */
+  private drawWeaponAt(
+    g: Phaser.GameObjects.Graphics,
+    weapon: { shape: WeaponShape; blade: number } | undefined,
+    handX: number,
+    handY: number,
+    ang: number,
+    scale: number,
+  ): void {
+    if (!weapon) return
+    g.save()
+    g.translateCanvas(handX, handY)
+    g.rotateCanvas(ang)
+    WeaponRenderer.draw(g, weapon.shape, weapon.blade, scale)
+    g.restore()
+  }
+
+  /** Variant that computes the hand position from a shoulder + arm. */
+  private drawWeaponFromShoulder(
+    g: Phaser.GameObjects.Graphics,
+    weapon: { shape: WeaponShape; blade: number } | undefined,
+    rootX: number,
+    rootY: number,
+    ang: number,
+    armLen: number,
+    scale: number,
+  ): void {
+    if (!weapon) return
+    const handX = rootX + Math.sin(ang) * armLen
+    const handY = rootY - Math.cos(ang) * armLen
+    this.drawWeaponAt(g, weapon, handX, handY, ang, scale)
+  }
+
   private drawSlashArm(
     g: Phaser.GameObjects.Graphics,
     rootX: number,
@@ -358,32 +396,21 @@ export class StickmanRenderer {
       const dirAngle = Math.atan2(p.attackDirX, -p.attackDirY)
       const armLen = (G.UPPER_ARM_LENGTH + G.LOWER_ARM_LENGTH) * scale * 0.95
       switch (p.attackKind) {
-        case 'slashR':
-          this.drawSlashArm(
-            g,
-            rightShoulderX,
-            shoulderYOff,
-            dirAngle + slashRSwingCurve(progress),
-            armLen,
-            color,
-            lineWidth,
-          )
+        case 'slashR': {
+          const ang = dirAngle + slashRSwingCurve(progress)
+          this.drawSlashArm(g, rightShoulderX, shoulderYOff, ang, armLen, color, lineWidth)
           this.drawIdleArm(g, leftShoulderX, shoulderYOff, scale, -1, color, lineWidth)
+          this.drawWeaponFromShoulder(g, p.weapon, rightShoulderX, shoulderYOff, ang, armLen, scale)
           return
-        case 'slashL':
-          this.drawSlashArm(
-            g,
-            leftShoulderX,
-            shoulderYOff,
-            dirAngle + slashLSwingCurve(progress),
-            armLen,
-            color,
-            lineWidth,
-          )
+        }
+        case 'slashL': {
+          const ang = dirAngle + slashLSwingCurve(progress)
+          this.drawSlashArm(g, leftShoulderX, shoulderYOff, ang, armLen, color, lineWidth)
           this.drawIdleArm(g, rightShoulderX, shoulderYOff, scale, 1, color, lineWidth)
+          this.drawWeaponFromShoulder(g, p.weapon, leftShoulderX, shoulderYOff, ang, armLen, scale)
           return
+        }
         case 'chop': {
-          // Two-handed vertical chop — both arms converge on the same hand.
           const ang = dirAngle + chopSwingCurve(progress)
           const handX = Math.sin(ang) * armLen
           const handY = -Math.cos(ang) * armLen
@@ -396,23 +423,17 @@ export class StickmanRenderer {
           g.strokePath()
           g.fillStyle(color, 1)
           g.fillCircle(handX, handY, lineWidth * 0.6)
+          this.drawWeaponAt(g, p.weapon, handX, handY, ang, scale)
           return
         }
         case 'uppercut': {
-          this.drawSlashArm(
-            g,
-            rightShoulderX,
-            shoulderYOff,
-            dirAngle + uppercutSwingCurve(progress),
-            armLen,
-            color,
-            lineWidth,
-          )
+          const ang = dirAngle + uppercutSwingCurve(progress)
+          this.drawSlashArm(g, rightShoulderX, shoulderYOff, ang, armLen, color, lineWidth)
           this.drawIdleArm(g, leftShoulderX, shoulderYOff, scale, -1, color, lineWidth)
+          this.drawWeaponFromShoulder(g, p.weapon, rightShoulderX, shoulderYOff, ang, armLen, scale)
           return
         }
         case 'spin': {
-          // Single arm rotates 720° around the body.
           const ang = spinSwingCurve(progress)
           const handX = Math.sin(ang) * armLen
           const handY = -Math.cos(ang) * armLen
@@ -428,6 +449,7 @@ export class StickmanRenderer {
           g.beginPath()
           g.arc(0, shoulderYOff, armLen, ang - 1.2 - Math.PI / 2, ang - Math.PI / 2)
           g.strokePath()
+          this.drawWeaponAt(g, p.weapon, handX, handY, ang, scale)
           return
         }
         case 'kick': {

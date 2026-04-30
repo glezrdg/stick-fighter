@@ -1,4 +1,4 @@
-import { attackPatterns, getEnemyType } from '@stick/content'
+import { type WeaponShape, attackPatterns, getEnemyType, getSkin, getWeapon } from '@stick/content'
 import { timeSeed } from '@stick/sim'
 
 import { dtFromPhaser } from '../app/time'
@@ -74,6 +74,8 @@ export class ArenaScene extends BaseScene {
   private loadout!: RunLoadout
   private lastAliveCount = -1
   private currentWaveTotal = 0
+  private playerSkinColor = 0x000000
+  private playerWeaponShape: { shape: WeaponShape; blade: number } | undefined
 
   constructor(services: ConstructorParameters<typeof BaseScene>[1]) {
     super(ArenaScene.KEY, services)
@@ -82,6 +84,7 @@ export class ArenaScene extends BaseScene {
   create(): void {
     // ---- Loadout from save ----
     this.loadout = this.computeLoadout()
+    this.refreshCosmetics()
 
     // ---- Effective stats (BuffSystem) ----
     this.stats = BuffSystem.computeStats({
@@ -252,7 +255,11 @@ export class ArenaScene extends BaseScene {
     this.renderGore()
     this.renderObstacles(this.obstacleSys.getAll())
     this.playerGraphics.setPosition(this.player.x, this.player.y)
-    this.stickman.draw(this.playerGraphics, this.player)
+    this.stickman.draw(this.playerGraphics, {
+      ...this.player,
+      color: this.playerSkinColor,
+      ...(this.playerWeaponShape ? { weapon: this.playerWeaponShape } : {}),
+    })
     this.renderEnemies(enemies)
     this.renderProjectiles(this.projectiles.getAll())
 
@@ -331,6 +338,23 @@ export class ArenaScene extends BaseScene {
       equippedWeaponId: this.loadout.weaponId,
       weaponLevel: this.loadout.weaponLevel,
     })
+  }
+
+  /** Read skin color + weapon shape from save.cosmetics. */
+  private refreshCosmetics(): void {
+    const save = this.services.save
+    try {
+      const skin = getSkin(save.cosmetics.char.equipped)
+      this.playerSkinColor = hexToNum(skin.color)
+    } catch {
+      this.playerSkinColor = 0x000000
+    }
+    try {
+      const weapon = getWeapon(this.loadout.weaponId)
+      this.playerWeaponShape = { shape: weapon.shape, blade: hexToNum(weapon.blade) }
+    } catch {
+      this.playerWeaponShape = undefined
+    }
   }
 
   /** Pull the current run loadout from the save. Falls back to defaults if
