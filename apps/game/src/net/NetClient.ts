@@ -189,21 +189,29 @@ export class NetClient {
     // will keep firing for every subsequent diff.
     const initial = stateToSnapshot(room.state as unknown)
     this.lastSnapshot = initial
+    // Fire listeners with the initial snapshot too — `onStateChange` may
+    // not replay the first state if it landed before we registered. Without
+    // this the LobbyOverlay never sees any update.
+    this.notifyListeners(initial)
     room.onStateChange((state: unknown) => {
       this.lastSnapshot = stateToSnapshot(state)
-      for (const fn of [...this.listeners]) {
-        try {
-          fn(this.lastSnapshot)
-        } catch (err) {
-          console.error('[net] listener threw:', err)
-        }
-      }
+      this.notifyListeners(this.lastSnapshot)
     })
     room.onLeave(() => {
       this.room = null
       this.lastSnapshot = null
     })
     return initial
+  }
+
+  private notifyListeners(snap: RoomSnapshot): void {
+    for (const fn of [...this.listeners]) {
+      try {
+        fn(snap)
+      } catch (err) {
+        console.error('[net] listener threw:', err)
+      }
+    }
   }
 }
 
