@@ -17,7 +17,7 @@ RUN pnpm install --frozen-lockfile
 
 # ---- build: compila packages workspace + bundle Vite ----
 FROM deps AS build
-ARG VITE_API_URL=https://api.stick-fighter.neomac.io
+ARG VITE_API_URL=https://stick-fighter-api.neomac.io
 ENV VITE_API_URL=${VITE_API_URL}
 COPY tsconfig.base.json ./
 COPY packages/shared ./packages/shared

@@ -31,7 +31,7 @@ Lo que ya funciona end-to-end:
 
 - F1–F2.6: arena jugable, 8 enemigos, oleadas, jefes, buff cards, gore, tienda, skins, skills, save Zod versionado.
 - F3: AudioSystem procedural (sin assets), música por scene, sliders persistidos.
-- F4: backend Fastify desplegado en VPS personal (`api.stick-fighter.neomac.io`), tabla `users` + `runs`, leaderboard top-100 cacheado en memoria.
+- F4: backend Fastify desplegado en VPS personal (`stick-fighter-api.neomac.io`), tabla `users` + `runs`, leaderboard top-100 cacheado en memoria.
 - F4.5: cliente cableado al backend (submit run al terminar, leaderboard pollable desde menú).
 - F5 auth básica: `POST /auth/register`, `/auth/login`, `/auth/refresh`, `/auth/me`. bcrypt + JWT (access 15m / refresh 30d). Anonymous submissions siguen funcionando.
 - Refactor `packages/sim`: lógica determinística aislada del cliente Phaser (entities, behaviors, skills, systems). Listo para ser reusada server-side cuando volvamos a multiplayer.
@@ -120,7 +120,7 @@ pnpm dev   # http://localhost:5173
 
 | Var            | Default                               | Notas                                       |
 | -------------- | ------------------------------------- | ------------------------------------------- |
-| `VITE_API_URL` | `https://api.stick-fighter.neomac.io` | usar `http://localhost:3000` para dev local |
+| `VITE_API_URL` | `https://stick-fighter-api.neomac.io` | usar `http://localhost:3000` para dev local |
 
 ## Comandos
 

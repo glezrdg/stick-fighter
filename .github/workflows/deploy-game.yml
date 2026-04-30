@@ -24,7 +24,7 @@ jobs:
     env:
       PROJECT_NAME: ${{ vars.GAME_PROJECT_NAME || 'stick-fighter' }}
       SUBDOMAIN: ${{ vars.GAME_SUBDOMAIN || 'stick-fighter' }}
-      VITE_API_URL: ${{ vars.VITE_API_URL || 'https://api.stick-fighter.neomac.io' }}
+      VITE_API_URL: ${{ vars.VITE_API_URL || 'https://stick-fighter-api.neomac.io' }}
 
     steps:
       - name: Sync repo to /opt/apps

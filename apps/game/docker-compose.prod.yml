@@ -11,7 +11,7 @@ services:
       context: ../..
       dockerfile: apps/game/Dockerfile
       args:
-        VITE_API_URL: ${VITE_API_URL:-https://api.stick-fighter.neomac.io}
+        VITE_API_URL: ${VITE_API_URL:-https://stick-fighter-api.neomac.io}
     restart: unless-stopped
     networks:
       - web
