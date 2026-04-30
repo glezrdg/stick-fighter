@@ -1,3 +1,8 @@
+// `@colyseus/schema` 3.x usa stage-3 decorators que dependen de
+// `Symbol.metadata`. Node 22 todavía no lo expone por default, así que
+// polyfill ANTES de cualquier import del schema.
+;(Symbol as { metadata?: symbol }).metadata ??= Symbol.for('Symbol.metadata')
+
 import { createServer } from 'node:http'
 
 import { Server } from '@colyseus/core'
