@@ -94,6 +94,7 @@ export class ArenaScene extends BaseScene {
   private particleGraphics!: Phaser.GameObjects.Graphics
   private telegraphGraphics!: Phaser.GameObjects.Graphics
   private deathFxGraphics!: Phaser.GameObjects.Graphics
+  private auraGraphics!: Phaser.GameObjects.Graphics
 
   private tornadoTickAcc = 0
   private busUnsubs: Array<() => void> = []
@@ -206,6 +207,9 @@ export class ArenaScene extends BaseScene {
     this.telegraphGraphics = this.add.graphics()
     this.obstacleGraphics = this.add.graphics()
     this.gorePartsGraphics = this.add.graphics()
+    // Player aura sits below the stickman so it reads as a glow around them,
+    // not on top. Drawn each frame in update() if combo > 0 or tornado active.
+    this.auraGraphics = this.add.graphics()
     this.playerGraphics = this.add.graphics()
     this.projectileGraphics = this.add.graphics()
     // Particles render on top of everything except popups.
@@ -394,6 +398,12 @@ export class ArenaScene extends BaseScene {
     ParticleRenderer.draw(this.particleGraphics, this.particles.getAll())
     this.deathFxGraphics.clear()
     DeathFxRenderer.draw(this.deathFxGraphics, this.deathFx.getAll())
+
+    // Aura around the player (legacy drawAura 3649-3663). Visible when combo
+    // is rolling or the sword tornado is active. Intensity scales with combo.
+    this.auraGraphics.clear()
+    this.drawPlayerAura()
+
     this.playerGraphics.setPosition(this.player.x, this.player.y)
     this.stickman.draw(this.playerGraphics, {
       ...this.player,
@@ -592,6 +602,37 @@ export class ArenaScene extends BaseScene {
       this.runState.hitStop = this.hitStopState.hitStop
       this.hitStopCooldown = this.hitStopState.cooldown
     }
+  }
+
+  /**
+   * Player aura — soft radial glow around the actor. Intensity grows with
+   * combo (matches legacy `0.5 + combo * 0.05`, capped at 1.4) and pulses
+   * up to 1.6 while the sword tornado is active. Hidden when combo is 0
+   * and no skill is running so the silhouette stays clean in idle.
+   */
+  private drawPlayerAura(): void {
+    // Active when the combo window hasn't expired or the sword tornado
+    // is going. Intensity scales with combo step so chaining attacks pumps
+    // the glow up.
+    const inCombo = this.player.attackStepTimer > 0 && this.player.attackStep > 0
+    const tornadoActive = this.runState.tornadoTimer > 0
+    if (!inCombo && !tornadoActive) return
+    let intensity = inCombo ? Math.min(1.4, 0.5 + this.player.attackStep * 0.15) : 0.6
+    if (tornadoActive) intensity = Math.max(intensity, 1.6)
+
+    const cx = this.player.x
+    const cy = this.player.y - 18
+    const baseR = 38
+    const g = this.auraGraphics
+    const color = this.auraColor
+    // Three concentric discs of decreasing radius / increasing alpha to
+    // approximate a radial gradient on Phaser Graphics (no native gradient).
+    g.fillStyle(color, 0.1 * intensity)
+    g.fillCircle(cx, cy, baseR * 1.2 * intensity)
+    g.fillStyle(color, 0.18 * intensity)
+    g.fillCircle(cx, cy, baseR * 0.9 * intensity)
+    g.fillStyle(color, 0.28 * intensity)
+    g.fillCircle(cx, cy, baseR * 0.55 * intensity)
   }
 
   /** Final attack of the combo cycle — gold flash + extended hit-stop +

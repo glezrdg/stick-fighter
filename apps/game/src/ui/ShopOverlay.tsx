@@ -5,6 +5,8 @@ import { type Component, For, Show, createSignal, onCleanup } from 'solid-js'
 
 import type { SaveStore } from '../core/meta/saveStore'
 
+import { SkinPreview, WeaponPreview } from './ShopPreview'
+
 interface ShopOverlayProps {
   bus: EventBus
   saveStore: SaveStore
@@ -284,11 +286,19 @@ export const ShopOverlay: Component<ShopOverlayProps> = (props) => {
                 const upgradeCost = () => BuffSystem.weaponUpgradeCost(level())
                 const cost = () => (owned() ? upgradeCost() : w.cost)
                 const canAfford = () => save().gold >= cost()
+                // Effective dmg with the per-level bonus (BuffSystem applies
+                // the same 1 + (level-1) * 0.15 curve at runtime).
+                const effectiveDmg = () => w.dmg * (1 + (level() - 1) * 0.15)
                 return (
                   <ShopRow
                     icon="⚔️"
+                    preview={() => <WeaponPreview weapon={w} />}
                     title={`${w.name}${owned() ? ` Lv.${level()}` : ''}`}
-                    desc={`Daño ${w.dmg.toFixed(1)} · Atk ${(w.atkSpeed * 100).toFixed(0)}%`}
+                    desc={
+                      owned()
+                        ? `Daño ${effectiveDmg().toFixed(1)} (+${Math.round((effectiveDmg() / w.dmg - 1) * 100)}%) · Atk ${(w.atkSpeed * 100).toFixed(0)}%`
+                        : `Daño ${w.dmg.toFixed(1)} · Atk ${(w.atkSpeed * 100).toFixed(0)}%`
+                    }
                     state={equipped() ? 'equipped' : owned() ? 'owned' : 'locked'}
                   >
                     <button
@@ -340,7 +350,7 @@ export const ShopOverlay: Component<ShopOverlayProps> = (props) => {
                 return (
                   <ShopRow
                     icon="🥷"
-                    iconBg={s.color}
+                    preview={() => <SkinPreview skin={s} />}
                     title={s.name + (s.premium ? ' 💎' : '')}
                     desc={`Ropa ${s.clothing} · ${s.accessory}`}
                     state={equipped() ? 'equipped' : owned() ? 'owned' : 'locked'}
@@ -502,6 +512,8 @@ const ShopRow: Component<{
   icon: string
   /** Optional CSS color for a glowing disc behind the icon (used for auras). */
   iconBg?: string
+  /** Optional Solid render slot replacing the emoji icon (canvas previews). */
+  preview?: () => unknown
   title: string
   desc: string
   state: 'equipped' | 'owned' | 'locked'
@@ -529,26 +541,31 @@ const ShopRow: Component<{
         'box-shadow': glow(),
       }}
     >
-      <div
-        style={{
-          width: '40px',
-          height: '40px',
-          'border-radius': '50%',
-          display: 'flex',
-          'align-items': 'center',
-          'justify-content': 'center',
-          background: props.iconBg
-            ? `radial-gradient(circle at 50% 35%, ${props.iconBg} 0%, rgba(0,0,0,0.6) 80%)`
-            : 'transparent',
-          'box-shadow': props.iconBg
-            ? `0 0 14px ${props.iconBg}, inset 0 1px 0 rgba(255,255,255,0.2)`
-            : 'none',
-          'font-size': '24px',
-          'flex-shrink': 0,
-        }}
+      <Show
+        when={!props.preview}
+        fallback={<div style={{ 'flex-shrink': 0 }}>{props.preview!() as never}</div>}
       >
-        {props.icon}
-      </div>
+        <div
+          style={{
+            width: '40px',
+            height: '40px',
+            'border-radius': '50%',
+            display: 'flex',
+            'align-items': 'center',
+            'justify-content': 'center',
+            background: props.iconBg
+              ? `radial-gradient(circle at 50% 35%, ${props.iconBg} 0%, rgba(0,0,0,0.6) 80%)`
+              : 'transparent',
+            'box-shadow': props.iconBg
+              ? `0 0 14px ${props.iconBg}, inset 0 1px 0 rgba(255,255,255,0.2)`
+              : 'none',
+            'font-size': '24px',
+            'flex-shrink': 0,
+          }}
+        >
+          {props.icon}
+        </div>
+      </Show>
       <div style={{ flex: 1, 'min-width': 0 }}>
         <div
           style={{

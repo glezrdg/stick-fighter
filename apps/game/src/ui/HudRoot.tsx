@@ -201,8 +201,9 @@ export const HudRoot: Component<HudRootProps> = (props) => {
           style={{
             display: 'flex',
             'flex-wrap': 'wrap',
-            gap: '4px',
+            gap: '6px',
             'justify-content': 'center',
+            'margin-top': '4px',
           }}
         >
           <StatChip label="HP" value={`${maxHp()}`} color="#ff5050" icon="❤" />
@@ -330,25 +331,32 @@ const StatChip: Component<{ label: string; value: string; color: string; icon: s
     style={{
       display: 'flex',
       'align-items': 'center',
-      gap: '4px',
-      padding: '2px 8px',
-      background: 'linear-gradient(180deg, rgba(255,42,42,0.10), rgba(0,0,0,0.55))',
-      border: `1.5px solid ${props.color}`,
+      gap: '6px',
+      padding: '5px 11px',
+      background: 'linear-gradient(180deg, rgba(255,42,42,0.10), rgba(0,0,0,0.65))',
+      border: `2px solid ${props.color}`,
       'border-radius': '999px',
       'font-family': "'Russo One', sans-serif",
-      'font-size': '10px',
       color: '#fff',
       'letter-spacing': '0.5px',
       'text-shadow': '1px 1px 0 #000',
       'pointer-events': 'none',
       'white-space': 'nowrap',
+      'box-shadow': `0 0 8px ${props.color}40, 0 2px 4px rgba(0,0,0,0.5)`,
     }}
   >
-    <span style={{ color: props.color, 'font-size': '9px' }}>{props.icon}</span>
-    <span style={{ color: props.color, 'font-weight': 600, 'font-size': '9px' }}>
+    <span style={{ color: props.color, 'font-size': '13px' }}>{props.icon}</span>
+    <span
+      style={{
+        color: props.color,
+        'font-weight': 700,
+        'font-size': '12px',
+        'letter-spacing': '1px',
+      }}
+    >
       {props.label}
     </span>
-    <span style={{ 'font-size': '11px' }}>{props.value}</span>
+    <span style={{ 'font-size': '13px', 'font-weight': 700 }}>{props.value}</span>
   </div>
 )
 
