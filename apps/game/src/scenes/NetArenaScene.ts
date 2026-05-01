@@ -306,11 +306,40 @@ export class NetArenaScene extends BaseScene {
     if (me && (!meBefore || me.hp !== meBefore.hp || me.maxHp !== meBefore.maxHp)) {
       this.bus.emit('player:hp:changed', { hp: me.hp, maxHp: me.maxHp })
     }
+    // Local player's effective stats changed (post wave-buff resolve) → emit
+    // `stats:changed` so the 6 chips DMG/VEL/CRT/REG/KB/ORO reaccionen.
+    if (me?.stats) {
+      const a = me.stats
+      const b = meBefore?.stats
+      const changed =
+        !b ||
+        a.dmgMul !== b.dmgMul ||
+        a.atkSpeedMul !== b.atkSpeedMul ||
+        a.critChance !== b.critChance ||
+        a.regenPerSec !== b.regenPerSec ||
+        a.knockbackMul !== b.knockbackMul ||
+        a.goldMul !== b.goldMul
+      if (changed) {
+        this.bus.emit('stats:changed', {
+          maxHp: me.maxHp,
+          dmgMul: a.dmgMul,
+          atkSpeedMul: a.atkSpeedMul,
+          critChance: a.critChance,
+          regenPerSec: a.regenPerSec,
+          knockbackMul: a.knockbackMul,
+          goldMul: a.goldMul,
+        })
+      }
+    }
 
     if (!prev) return
 
-    // ---- Damage popups + sparks ----------------------------------------
-    // Players: HP went down → blood + popup at their position.
+    // ---- Damage popups + sparks + audio bridge -------------------------
+    // En multi NUNCA llega un `combat:hit` por la red — para no aumentar
+    // el tamaño del state msg lo inferimos por diff de HP. Emitimos los
+    // mismos eventos que SP para que AudioSystem reaccione igual.
+
+    // Players: HP went down → blood + popup at their position + player:hurt sfx.
     for (const p of state.players) {
       const before = prev.players.find((q) => q.sessionId === p.sessionId)
       if (!before) continue
@@ -321,10 +350,17 @@ export class NetArenaScene extends BaseScene {
         // Local player took a hit → shake the camera so the impact reads.
         if (p.sessionId === this.snap.sessionId) {
           this.cameraShake = Math.max(this.cameraShake, 0.18 + Math.min(0.25, dmg / 100))
+          this.bus.emit('player:hurt', { dmg, remainingHp: p.hp, src: 'melee' })
         }
       }
+      // Player went from alive → downed: emit `player:death` analog so audio
+      // reacciona igual que en SP. (En multi no es muerte real — es Left4Dead
+      // downed — pero para el oído es el mismo cue.)
+      if (p.downed && !before.downed && p.sessionId === this.snap.sessionId) {
+        this.bus.emit('player:death', {})
+      }
     }
-    // Enemies: HP down → slash + popup; disappeared → blood burst.
+    // Enemies: HP down → slash + popup + combat:hit (drives sfxHit).
     for (const e of state.enemies) {
       const before = prev.enemies.find((q) => q.id === e.id)
       if (!before) continue
@@ -332,6 +368,11 @@ export class NetArenaScene extends BaseScene {
         const dmg = before.hp - e.hp
         this.particles.spawnSlashFx(e.x, e.y - 18, e.facingX, e.facingY)
         this.spawnDamagePopup(e.x, e.y - 30, dmg, true)
+        // Crit detection client-side: the server doesn't send a `crit` flag,
+        // so we approximate with "dmg above the typical floor" → critty.
+        // Audible difference is minor; visual popup keeps yellow regardless.
+        const critGuess = dmg >= 30
+        this.bus.emit('combat:hit', { attackerId: 'self', targetId: e.id, dmg, crit: critGuess })
       }
     }
     const liveIds = new Set(state.enemies.map((e) => e.id))
@@ -365,6 +406,22 @@ export class NetArenaScene extends BaseScene {
       this.particles.spawnBlood(before.x, before.y - 18, 0, -1, 18)
       // Each kill rumbles the camera a touch — bigger if it's a heavyweight.
       this.cameraShake = Math.max(this.cameraShake, 0.08 + 0.04 * scale)
+      // Audio bridge: el AudioSystem en SP escucha `enemy:death` para sfxKill.
+      // En multi no nos llega del server — lo inferimos del diff y lo emitimos
+      // localmente con la misma firma.
+      this.bus.emit('enemy:death', { enemyId: before.id, byPlayer: true })
+    }
+
+    // Obstacles: si desapareció uno respecto al state previo, asumimos que
+    // explotó (server destroys explicitly, no se "achican"). Emite `obstacle:
+    // explode` para que AudioSystem haga sfxExplode().
+    const prevObstacles = prev.obstacles ?? []
+    const nowObstacleIds = new Set((state.obstacles ?? []).map((o) => o.id))
+    for (const before of prevObstacles) {
+      if (nowObstacleIds.has(before.id)) continue
+      this.particles.spawnShockwave(before.x, before.y, before.r * 1.5)
+      this.cameraShake = Math.max(this.cameraShake, 0.22)
+      this.bus.emit('obstacle:explode', { x: before.x, y: before.y, type: before.type })
     }
   }
 
@@ -484,6 +541,18 @@ export class NetArenaScene extends BaseScene {
       ov = { hpBg, hpFill, name, lastHp: p.hp }
       this.playerOverlays.set(p.sessionId, ov)
     }
+    // Si hay wave-buff cards abiertas, escondemos los overlays para que no
+    // crucen el modal. Las cards lo cubren todo y los names cruzaban "OLEADA
+    // X SUPERADA" en mid-air.
+    if (this.snap.waveBuffOffer) {
+      ov.hpBg.setVisible(false)
+      ov.hpFill.setVisible(false)
+      if (ov.name) ov.name.setVisible(false)
+      return
+    }
+    ov.hpBg.setVisible(true)
+    ov.hpFill.setVisible(true)
+    if (ov.name) ov.name.setVisible(true)
     const above = p.y - 36
     if (p.downed) {
       // Replace HP bar with a revival progress bar (yellow → green as peer

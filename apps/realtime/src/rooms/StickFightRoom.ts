@@ -683,6 +683,7 @@ export class StickFightRoom {
   private stateMsg(): StateMsg {
     const players: NetPlayer[] = []
     for (const c of this.clients.values()) {
+      const rb = c.runBuffs
       players.push({
         sessionId: c.sessionId,
         name: c.name,
@@ -706,6 +707,17 @@ export class StickFightRoom {
         revivalProgress: c.downed
           ? Math.min(1, c.killsByPeerSinceDown / REVIVAL_KILLS_REQUIRED)
           : 0,
+        // Stats efectivos para el HUD del cliente. Sprint 2 los pondrá detrás
+        // de BuffSystem.computeStats(); por ahora los derivamos inline desde
+        // runBuffs para que los chips reaccionen al pickear cards.
+        stats: {
+          dmgMul: 1 + rb.dmg,
+          atkSpeedMul: 1 + rb.atkSpeed,
+          critChance: BASE_CRIT_CHANCE + rb.crit,
+          regenPerSec: rb.regen,
+          knockbackMul: 1 + rb.knockback,
+          goldMul: 1 + rb.gold,
+        },
       })
     }
 

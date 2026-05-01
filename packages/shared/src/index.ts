@@ -59,6 +59,7 @@ export {
   type NetEnemy,
   type NetObstacle,
   type NetPlayer,
+  type NetPlayerStats,
   type PeerLeftMsg,
   type PhaseMsg,
   type PingMsg,

@@ -46,6 +46,9 @@ export const HudRoot: Component<HudRootProps> = (props) => {
   const [regenPerSec, setRegenPerSec] = createSignal(0)
   const [knockbackMul, setKnockbackMul] = createSignal(1)
   const [goldMul, setGoldMul] = createSignal(1)
+  // Mid-run modal abierto (wave-buff cards). El HUD se atenúa para no
+  // pelear con el overlay rojo del modal — match con el feel de SP.
+  const [modalOpen, setModalOpen] = createSignal(false)
 
   const updateSlot = (slot: 0 | 1, patch: Partial<SkillSlotState>) => {
     setSlots((cur) => {
@@ -99,6 +102,8 @@ export const HudRoot: Component<HudRootProps> = (props) => {
       setGoldMul(goldMul)
     },
   )
+  const offBuffOpen = props.bus.on('wave:buff:offer', () => setModalOpen(true))
+  const offBuffResume = props.bus.on('wave:resume', () => setModalOpen(false))
 
   // Auto-hide wave banner after the bannerIn animation finishes.
   createEffect(() => {
@@ -119,12 +124,24 @@ export const HudRoot: Component<HudRootProps> = (props) => {
     offComboReset()
     offStats()
     offRunStart()
+    offBuffOpen()
+    offBuffResume()
   })
 
   const hpPct = () => Math.max(0, Math.min(1, hp() / Math.max(1, maxHp())))
 
   return (
-    <>
+    <div
+      style={{
+        // Atenuamos TODO el HUD cuando hay un modal mid-run (wave-buff cards
+        // sobre todo). Sin esto, los chips de stats y la HP bar se cuelan
+        // por encima del overlay rojo y queda visualmente sucio.
+        opacity: modalOpen() ? 0.18 : 1,
+        transition: 'opacity 0.18s ease-out',
+        // No reposicionamos: los children tienen `position: absolute` con
+        // anchors al overlay padre — wrapper sin position no rompe el layout.
+      }}
+    >
       {/* ---- Top stack: HP bar + wave/gold info ---- */}
       <div
         style={{
@@ -320,7 +337,7 @@ export const HudRoot: Component<HudRootProps> = (props) => {
       >
         <For each={slots()}>{(slot, i) => <SkillSlot slot={slot} index={i() as 0 | 1} />}</For>
       </div>
-    </>
+    </div>
   )
 }
 

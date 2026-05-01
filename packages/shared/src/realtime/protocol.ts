@@ -187,6 +187,23 @@ export interface NetPlayer {
    *  peer has matado the configured number of enemies and the next tick
    *  will revive this player at 50% HP. */
   revivalProgress?: number
+  /** Effective stats derived from this player's run buffs. The client
+   *  diffs the local self's stats and emits `stats:changed` on the local
+   *  bus so the HUD chips (DMG/VEL/CRT/REG/KB/ORO) reaccionan vivos.
+   *  Optional para retrocompat con servers/cliente más viejos. */
+  stats?: NetPlayerStats
+}
+
+/** Subset de `EffectiveStats` que el server computa per-cliente para que
+ *  el HUD pueda pintar los chips en multi. No incluye `maxHp` ni `cdMul`
+ *  porque ya están en otros campos del player o no se usan en multi. */
+export interface NetPlayerStats {
+  dmgMul: number
+  atkSpeedMul: number
+  critChance: number
+  regenPerSec: number
+  knockbackMul: number
+  goldMul: number
 }
 
 export interface NetEnemy {
