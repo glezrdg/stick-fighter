@@ -10,21 +10,22 @@ El plan completo de la migración por fases está en `~/.claude/plans/necesito-q
 stick-fighter/
 ├── apps/
 │   ├── game/              # cliente Phaser + Solid + Vite (la app jugable)
-│   └── api/               # backend Fastify + Drizzle + Postgres (F4 + auth F5)
+│   ├── api/               # backend Fastify + Drizzle + Postgres (auth + leaderboard + cloud-save)
+│   └── realtime/          # multiplayer WS raw + JSON, server-authoritative 30Hz (F5R')
 ├── packages/
-│   ├── shared/            # tipos puros, Zod schemas (cliente ↔ servidor)
+│   ├── shared/            # tipos puros + Zod schemas (cliente ↔ api ↔ realtime)
 │   ├── content/           # configs de juego (weapons/skins/skills/enemies) + Zod
-│   └── sim/               # simulación pura SIN Phaser/DOM (núcleo determinístico)
+│   └── sim/               # simulación pura SIN Phaser/DOM (reusada por game + realtime)
 ├── legacy/
 │   └── index.html         # juego original ChatGPT, REFERENCIA funcional, no source
-└── .github/workflows/     # CI + deploy-api.yml + deploy-game.yml (self-hosted runner del VPS)
+└── .github/workflows/     # deploy-{api,game,realtime}.yml — todos en self-hosted runner del VPS
 ```
 
-> `apps/realtime/` (Colyseus multiplayer) **NO está en main**. Está parqueado en la rama `experimental/multiplayer` — ver sección "Multiplayer" abajo.
+> `apps/realtime/` corre **WS raw + JSON** server-authoritative y está en main, deployado en `wss://stick-fighter-realtime.neomac.io`. La rama `experimental/multiplayer` conserva los intentos viejos con Colyseus (no mergear). Ver sección "Multiplayer" abajo.
 
 ## Fase actual
 
-**F4.5 + auth básica + refactor `packages/sim` completados. F5 phase 3 (multiplayer Colyseus) pausado.**
+**F5R'-C completado: multi co-op 2P jugable end-to-end con paridad visible básica. Sprint de unificación arquitectural en curso.**
 
 Lo que ya funciona end-to-end:
 
@@ -33,13 +34,59 @@ Lo que ya funciona end-to-end:
 - F4: backend Fastify desplegado en VPS personal (`stick-fighter-api.neomac.io`), tabla `users` + `runs`, leaderboard top-100 cacheado en memoria.
 - F4.5: cliente cableado al backend (submit run al terminar, leaderboard pollable desde menú).
 - F5 auth básica: `POST /auth/register`, `/auth/login`, `/auth/refresh`, `/auth/me`. bcrypt + JWT (access 15m / refresh 30d). Anonymous submissions siguen funcionando.
-- Refactor `packages/sim`: lógica determinística aislada del cliente Phaser (entities, behaviors, skills, systems). Listo para ser reusada server-side cuando volvamos a multiplayer.
+- Refactor `packages/sim`: lógica determinística aislada del cliente Phaser (entities, behaviors, skills, systems). Reusada server-side por `apps/realtime`.
+- **F5R'-A/B/C**: multi co-op 2P sobre WS raw + JSON (`apps/realtime` en main, deployado en `wss://stick-fighter-realtime.neomac.io`). Cosmetics sync, Left4Dead-style downed/revival, gore + deathFx + camera shake, obstacles destructibles, wave buffs (server pausa, ambos votan).
 - **Migración Vercel → VPS**: frontend ahora servido en `https://stick-fighter.neomac.io` desde el VPS personal (nginx:alpine + Traefik + cert wildcard `*.neomac.io` via cf-dns). Proyecto Vercel borrado.
 
-Pendiente declarado:
+## Roadmap actual: paridad SP↔multi + unificación del motor
 
-- Multiplayer (volver con stack distinto, ver "Multiplayer").
+**Por qué existe este sprint**: hoy mismo el SP (`ArenaScene.ts`) y el multi (`StickFightRoom.ts` + `NetArenaScene.ts`) son **dos motores paralelos**. `packages/sim` cubre lo determinístico (combat, entities, behaviors, waves, obstacles), pero **muchos sistemas client-only nunca se portaron** (`SkillSystem`, `BuffSystem.computeStats()`, `runState` completo) y el server **reimplementa partes en simplificado** (damage mul, regen, wave-buff apply). Resultado: agregar una mecánica nueva = trabajo doble + drift garantizado.
+
+**El fix** son 3 sprints chicos mergeados a `main` (sin branches largos). Cada uno entrega valor visible.
+
+### Sprint 1: Polish visible (1-2 días) ← EN CURSO
+
+Lo que un jugador _ve_ mal hoy en multi:
+
+- HUD encima de las wave-buff cards (chips HP/DMG/etc se cuelan).
+- Name labels ("yermino — vos") cruzan el modal de cards.
+- Falta indicador "✓ vos / esperando peer" sobre las cards después de votar.
+- Stats chips estáticos (siempre 1.00/1.00/1.00/5%) — server nunca emite `stats:changed`.
+- Combo counter del HUD queda en 0 — server no emite `combo:advance/finisher`.
+- Audio reactivo: events `enemy:death`, `gold:changed` llegan vía bus local pero no todos los del server hacen bridge → SFX faltante.
+- Hit-stop client-side (50-180ms freeze al pegar) ausente en multi.
+- Damage popups del peer + críticos dorados ausentes.
+
+### Sprint 2: Unificación arquitectural (3-5 días)
+
+ROI más alto. Porta el motor client-only a `packages/sim` y hace que **un cambio = un cambio** en ambos lados:
+
+- Portar `SkillSystem` (Q/E + passives) a `sim`. Hoy multi tiene `c.input.skill = null` literal — los skills no funcionan en co-op.
+- Hacer que el server use `BuffSystem.computeStats()` igual que SP, eliminando el `applyBuffToClient` simplificado. Esto **prende automáticamente** los buffs hoy "silent": `atkSpeed` (acelera animación), `knockback` (escala empuje), `gold` (multiplica drops).
+- Unificar `runState`: hoy SP tiene `RunState` completo, server tiene `RoomClient.runBuffs` parcial. Alinear schemas.
+- Bridge correcto de stats al cliente: server emite `stats:changed` per-cliente, NetArenaScene lo escucha y los chips HUD reaccionan.
+- Skill cooldowns en HUD: server emite `skill:cooldown:changed`, chips Q/E reactivos.
+
+### Sprint 3: Features de paridad (3-4 días)
+
+Lo que falta como feature, no como bug:
+
+- Skills (Q/E activos + pasivos) jugables en multi. Sale "gratis" tras Sprint 2 si se hace bien.
+- Submit run al terminar multi → POST `/runs` (con seed verificable). Hoy multi no graba leaderboard.
+- Reconnect tras backgrounding mobile (`allowReconnection` 60s grace).
+- Drop-out gracioso (peer se va, vos seguís solo). Hoy server cierra la room al primer disconnect.
+- Cloud save post-run.
+- Aura/glow render del player desde `cosmetics.aura`.
+
+### Fuera de scope (decisiones de diseño primero, no código)
+
+- Tienda mid-run en co-op: ¿pausa al peer? ¿shared gold? ¿shared inventory? Punto a discutir.
+- Pause menu en co-op: ¿pausa global o solo cámara local?
+
+### Después de paridad
+
 - F6 mobile (Capacitor), F7 desktop (Tauri).
+- F2.5 sprites pixelart (parqueado, sigue siendo opcional).
 
 ## Stack del backend (`apps/api`)
 
@@ -170,26 +217,48 @@ packages/sim/src/
 
 La única lógica de combate que NO está en sim hoy es la generación de partículas de gore (cosmética). Todo lo que afecta scoreboard ya pasa por sim.
 
-## Multiplayer (parqueado)
+## Multiplayer
 
-F5 phase 3 intentó co-op 2P self-hosted con **Colyseus 0.16**. Funcionaba lobby/matchmaking pero el server crasheaba al intentar serializar el `WorldState` (`Symbol.metadata` undefined en el encoder de `@colyseus/schema`). Probamos polyfill, `defineTypes`, downgrade a 0.15 → cada fix expuso otro mismatch. Tras ~3h en el ciclo decidimos pausarlo limpiamente.
+Co-op 2P en producción sobre **WS raw + JSON** (`apps/realtime/`). Server en `wss://stick-fighter-realtime.neomac.io`, deployado al mismo VPS bajo Traefik.
 
-**Estado**:
+### Historia (lo aprendimos a la mala)
 
-- 12 commits preservados en la rama `experimental/multiplayer` (push'd a origin).
-- Main rolled back limpio: typecheck/test/lint/build verdes.
-- Container `stick-fighter-realtime` parado en el VPS (`docker compose down`).
-- El refactor de `packages/sim` se quedó (es la parte valiosa — no se tira).
+F5 phase 3 intentó **Colyseus 0.16** y crasheó con `Symbol.metadata undefined` en el encoder de `@colyseus/schema`. Retry con 0.15 crasheó con `bytes is not iterable` en `sendFullState`. Tras dos intentos pivotamos a **WS raw + JSON tipado**:
 
-**Cuándo volver**: con stack distinto. Opciones a evaluar:
+- Cada mensaje es un objeto discriminado por `t` (`'host'`, `'join'`, `'state'`, etc).
+- Wire human-readable en DevTools (Network → WS → Frames).
+- Zod sólo en handshake (`HostReq`/`JoinReq`); hot-path es `JSON.parse` + narrowing por TS.
+- Server-authoritative full-state broadcast a 30Hz (~3-5KB/tick = ~150KB/s/cliente).
 
-- **PartyKit / Cloudflare Durable Objects** — sin server propio, paga-por-uso.
-- **Socket.IO custom** — mensajes manuales, más control que Colyseus.
-- **Colyseus Cloud managed** — descarga el deploy/runtime, no self-host.
+Branch histórico de los intentos Colyseus: `experimental/multiplayer` (no mergear, conservar como referencia).
 
-No volver a Colyseus self-hosted sin entender primero el bug de `Symbol.metadata` upstream.
+### Estado actual (F5R'-A/B/C completados)
 
-**Cómo "testear multiplayer hoy"**: no se puede en main. Para experimentar: `git checkout experimental/multiplayer`, leer el README de esa rama (si existe) y arrancar `apps/realtime` localmente. No se va a mergear sin replantear el stack.
+- `packages/shared/src/realtime/protocol.ts` — protocolo discriminado completo.
+- `apps/realtime/src/rooms/StickFightRoom.ts` — 2P co-op con cosmetics sync, downed/revival Left4Dead-style, obstacles, wave-buff voting (server pausa, ambos votan, resuelve).
+- `apps/realtime/src/server.ts` — Express HTTP + WebSocketServer. Registry in-memory.
+- Cliente: `apps/game/src/net/NetClient.ts` (subscription model) + `apps/game/src/scenes/NetArenaScene.ts` (renderer puro, lee snapshots).
+
+### Lo que falta para paridad con SP
+
+Detallado arriba en "Roadmap actual". Resumen:
+
+- **Sprint 1 (en curso)**: polish visible — HUD durante cards, name labels, vote indicator, stats chips reactivos, audio bridge, hit-stop.
+- **Sprint 2**: unificar motor — server usa `BuffSystem.computeStats()` y `SkillSystem` directos de `sim` (en vez del mirror simplificado actual).
+- **Sprint 3**: features — skills jugables Q/E, submit run, reconnect, drop-out solo, cloud save.
+
+### Cómo correrlo localmente
+
+```bash
+# 1. Levantar realtime (puerto 2567)
+pnpm --filter @stick/realtime dev
+
+# 2. Cliente (en otra terminal). Apuntar al realtime local:
+echo "VITE_REALTIME_URL=ws://localhost:2567" >> apps/game/.env.local
+pnpm dev   # http://localhost:5173
+```
+
+Abrir 2 navegadores → en uno "CO-OP" → "CREAR SALA" → copiar el código de 4 letras → en el otro "CO-OP" → "UNIRSE" → ambos ready.
 
 ## Convenciones
 
