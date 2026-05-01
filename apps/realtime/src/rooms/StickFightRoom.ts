@@ -173,7 +173,13 @@ export interface RoomClient {
  *  `stateMsgFor`/`emitInitialSpawns`/etc. */
 const SERVER_MAX_NETCODE_VERSION = 2
 
-const SIM_TICK_HZ = 30
+/** Server tick rate. 60Hz para que el cliente reciba state nuevo cada frame
+ *  (rAF típicamente 60fps en mobile/desktop) — sin frames duplicados, sin
+ *  necesidad de interpolación cliente-side. Costo: ~2× el bandwidth out vs
+ *  30Hz. Con netcode v2 (Fase 1 del Sprint Netcode) bytes/s queda en ~120KB
+ *  por cliente, aún dentro del rango aceptable para mobile. Si en el futuro
+ *  pasamos a binario (Fase 3) bajaría a ~30 KB/s aún a 60Hz. */
+const SIM_TICK_HZ = 60
 const SIM_TICK_MS = 1000 / SIM_TICK_HZ
 /** Grace post-disconnect antes de matar el slot. Suficiente para mobile
  *  Safari (~30s background timeout) más buffer para reabrir la app. */

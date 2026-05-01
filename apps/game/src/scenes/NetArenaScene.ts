@@ -388,21 +388,12 @@ export class NetArenaScene extends BaseScene {
 
     this.prevState = state
 
-    // Camera follow con smoothing — clave para que multi se sienta fluido
-    // aunque el server tickee 30Hz. Sin esto cada 33ms la cámara salta a
-    // la nueva posición del player y el WORLD ENTERO se mueve en steps,
-    // lo que el ojo percibe como stutter aunque haya 60fps reales. Smoothing
-    // factor frame-rate-independent: k = 1 - exp(-dt × τ); τ alto = snappy,
-    // bajo = laggier. 14 ≈ 70ms de time constant, sweet spot entre
-    // responsividad y suavidad. Cuando llegamos a Fase 4 (interpolación
-    // global) este smoothing ya no será necesario.
+    // Camera follow directo. Pasamos a 60Hz server tick — los snapshots
+    // llegan cada 16ms así que cada frame del cliente tiene info nueva.
+    // El smoothing lerp introdujo un drag perceived que empeoró la sensación
+    // según el feedback del playtest, lo sacamos.
     const me = state.players.find((p) => p.sessionId === this.snap.sessionId) ?? state.players[0]
-    if (me) {
-      const k = 1 - Math.exp(-dt * 14)
-      this.cameraX += (me.x - this.cameraX) * k
-      this.cameraY += (me.y - this.cameraY) * k
-      this.cameras.main.centerOn(this.cameraX, this.cameraY)
-    }
+    if (me) this.cameras.main.centerOn(me.x, me.y)
 
     // Apply + decay the local cameraShake. Phaser's shake() doesn't stack,
     // so we re-arm it as long as we have time left.
