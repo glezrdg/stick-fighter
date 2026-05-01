@@ -42,63 +42,85 @@ export class EnemySystem {
     this.projectiles = opts.projectiles
   }
 
+  /**
+   * SP-style update: solo un player target. Convenience wrapper sobre
+   * `updateMulti` para no romper callers existentes.
+   */
   update(enemies: Enemy[], player: Player, dt: number): void {
-    const tickMul = dt * 60
+    this.updateMulti(enemies, [player], dt)
+  }
 
-    // Player hp/iframes are decayed by MovementSystem; here we just *apply* damage.
+  /**
+   * Multi-target update: cada enemy elige al player **vivo más cercano**
+   * como target antes de correr sus behaviors. Es lo que hace que en multi
+   * los enemies persigan a ambos jugadores en lugar de pegarse a uno solo.
+   *
+   * Si no hay players vivos (todos downed o array vacío), salimos sin
+   * tickear comportamientos pero igual decay'amos timers + hurtFlash para
+   * que no quede pegado el sim.
+   */
+  updateMulti(enemies: Enemy[], players: readonly Player[], dt: number): void {
+    const tickMul = dt * 60
+    const alive = players.filter((p) => p.hp > 0)
+
     for (const e of enemies) {
       const type = getEnemyType(e.typeId)
+      // Pick nearest alive player (squared distance, no sqrt).
+      const target = nearestPlayer(e, alive)
 
-      // Run all behaviors in the type's order.
-      for (const bid of type.behaviors) {
-        const behavior = enemyRegistry.tryGet(bid)
-        if (behavior) {
-          behavior({
-            enemy: e,
-            type,
-            player,
-            bus: this.bus,
-            rng: this.rng,
-            dt,
-            projectiles: this.projectiles,
-          })
+      if (target) {
+        for (const bid of type.behaviors) {
+          const behavior = enemyRegistry.tryGet(bid)
+          if (behavior) {
+            behavior({
+              enemy: e,
+              type,
+              player: target,
+              bus: this.bus,
+              rng: this.rng,
+              dt,
+              projectiles: this.projectiles,
+            })
+          }
         }
+      } else {
+        // Nadie vivo → enemy idle, freeze velocity para no driftear.
+        e.vx = 0
+        e.vy = 0
       }
 
-      // Smooth velocity + integrate position.
-      // (Behaviors set "desired" vx/vy; we lerp toward them so direction
-      // changes don't snap.)
-      // For this simple case behaviors set vx/vy directly so the lerp is a no-op,
-      // but it leaves room for blending forces in F2.
-      e.vx += (e.vx - e.vx) * ENEMY_VELOCITY_LERP * tickMul // intentional no-op placeholder
+      // Integrate position.
       e.x += e.vx * tickMul
       e.y += e.vy * tickMul
-
-      // Clamp to arena bounds.
       e.x = clamp(e.x, ARENA.playerInsetLeft, ARENA.width - ARENA.playerInsetRight)
       e.y = clamp(e.y, ARENA.playerInsetTop, ARENA.height - ARENA.playerInsetBottom)
 
-      // walkPhase
       const speed = Math.hypot(e.vx, e.vy)
       e.walkPhase += (speed * 0.08 + 0.02) * tickMul
 
-      // Strike: when attackTimer drops past behaviorState.strikeAt, resolve hit.
-      if (e.attackTimer > 0) {
+      // Strike: cuando attackTimer cruza strikeAt, resolver hit contra el
+      // target congelado al inicio de este tick (no re-eligir mid-strike).
+      if (e.attackTimer > 0 && target) {
         const prev = e.attackTimer
         e.attackTimer = Math.max(0, e.attackTimer - dt)
         const strikeAtRaw = e.behaviorState['strikeAt']
         const strikeAt = typeof strikeAtRaw === 'number' ? strikeAtRaw : -1
         if (strikeAt >= 0 && prev > strikeAt && e.attackTimer <= strikeAt) {
-          this.resolveEnemyMelee(e, type, player)
+          this.resolveEnemyMelee(e, type, target)
           delete e.behaviorState['strikeAt']
         }
         if (e.attackTimer === 0) {
           e.attackKind = null
         }
+      } else if (e.attackTimer > 0) {
+        e.attackTimer = Math.max(0, e.attackTimer - dt)
+        if (e.attackTimer === 0) e.attackKind = null
       }
 
       if (e.hurtFlash > 0) e.hurtFlash = Math.max(0, e.hurtFlash - dt)
     }
+    // Touch the lerp constant so eslint doesn't bark when behaviors evolve.
+    void ENEMY_VELOCITY_LERP
   }
 
   private resolveEnemyMelee(enemy: Enemy, type: EnemyType, player: Player): void {
@@ -123,4 +145,20 @@ export class EnemySystem {
 
 function clamp(v: number, lo: number, hi: number): number {
   return v < lo ? lo : v > hi ? hi : v
+}
+
+/** Nearest alive player (squared distance, no sqrt). null si lista vacía. */
+function nearestPlayer(enemy: Enemy, players: readonly Player[]): Player | null {
+  let best: Player | null = null
+  let bestSq = Infinity
+  for (const p of players) {
+    const dx = p.x - enemy.x
+    const dy = p.y - enemy.y
+    const sq = dx * dx + dy * dy
+    if (sq < bestSq) {
+      bestSq = sq
+      best = p
+    }
+  }
+  return best
 }

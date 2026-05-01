@@ -7,6 +7,7 @@ import {
   type NetLoadout,
   type NetObstacle,
   type NetPlayer,
+  type NetProjectile,
   type PhaseMsg,
   type ServerMsg,
   type StateMsg,
@@ -76,10 +77,13 @@ const DEFAULT_LOADOUT: NetLoadout = {
   weaponLevel: 1,
 }
 
-/** Left4Dead-style revival: peer must kill this many enemies to bring you back. */
-const REVIVAL_KILLS_REQUIRED = 5
-/** Max time spent downed before the run ends if no revive happens. */
-const DOWNED_TIMEOUT_MS = 30_000
+/** Left4Dead-style revival: peer must kill this many enemies to bring you back.
+ *  Bajamos de 5 a 3 — con un solo player ataquibles los enemies, 5 tarda
+ *  demasiado y la mayoría de los runs terminaban por timeout en vez de revival. */
+const REVIVAL_KILLS_REQUIRED = 3
+/** Max time spent downed before the run ends if no revive happens. Subimos
+ *  de 30s a 60s para dar margen real para reanimar entre waves. */
+const DOWNED_TIMEOUT_MS = 60_000
 /** HP fraction the revived player gets restored to. */
 const REVIVAL_HP_FRACTION = 0.5
 /** Invulnerability seconds granted after revive so you don't insta-die again. */
@@ -377,7 +381,12 @@ export class StickFightRoom {
 
     this.bus = createEventBus()
     this.rng = createRng(this.seed)
-    this.projectiles = new ProjectileSystem({ bus: this.bus })
+    this.projectiles = new ProjectileSystem({
+      bus: this.bus,
+      // Player arrows colisionan contra enemies — sin esto las flechas
+      // vuelan eternamente sin hacer daño. Misma firma que SP.
+      getEnemies: () => this.waves?.getEnemies() ?? [],
+    })
     this.enemies = new EnemySystem({
       bus: this.bus,
       rng: this.rng,
@@ -469,6 +478,11 @@ export class StickFightRoom {
     // de cada cliente refleje lo último (HP, gold, etc.).
     if (this.pendingBuffPhase) {
       if (now >= this.pendingBuffPhase.expiresAt) this.resolveWaveBuff('autopick')
+      // Pausar el rescue clock: el time-to-revive no debe correr mientras los
+      // jugadores están votando y no pueden matar enemies.
+      for (const c of this.clients.values()) {
+        if (c.downed && c.downedAt !== null) c.downedAt += SIM_TICK_MS
+      }
       this.tick++
       this.broadcast(this.stateMsg())
       return
@@ -515,7 +529,7 @@ export class StickFightRoom {
         const slot = c.input.skill
         const skillId = c.loadout.equippedSkills[slot]
         if (skillId) {
-          c.skills.cast({
+          const fired = c.skills.cast({
             slot,
             skillId,
             cdMul: c.effectiveStats.cdMul,
@@ -528,6 +542,20 @@ export class StickFightRoom {
               dmgMul: c.effectiveStats.dmgMul,
             },
           })
+          // Broadcast a TODOS para que cada cliente pinte el FX (aura burst,
+          // shockwave, etc) en la posición del caster. Sin esto las skills
+          // del peer son invisibles — solo se ven por el daño aplicado.
+          if (fired) {
+            this.broadcast({
+              t: 'skill:cast',
+              sessionId: c.sessionId,
+              skillId,
+              x: c.sim.x,
+              y: c.sim.y,
+              facingX: c.sim.facingX,
+              facingY: c.sim.facingY,
+            })
+          }
         }
         c.input.skill = null
       }
@@ -538,18 +566,20 @@ export class StickFightRoom {
       }
     }
 
-    // Shared world tick. EnemySystem needs an "alive player" target — pick
-    // the first non-downed client. If both are downed, the watchdog below
-    // will flip phase=gameover anyway, but the sim still advances harmlessly.
-    const target = this.firstAlive() ?? this.clients.values().next().value
-    if (target) {
-      const enemiesList = this.waves.getEnemies()
-      this.enemies.update(enemiesList, target.sim, dt)
-      this.projectiles.update(target.sim, dt)
+    // Shared world tick. EnemySystem en multi recibe TODOS los players vivos
+    // y cada enemy elige su target (el más cercano). Sin esto, los enemies
+    // se pegaban siempre al host (slot 0) y el peer (slot 1) era invisible.
+    const alivePlayers: Player[] = []
+    for (const c of this.clients.values()) if (!c.downed) alivePlayers.push(c.sim)
+    const enemiesList = this.waves.getEnemies()
+    if (alivePlayers.length > 0) {
+      this.enemies.updateMulti(enemiesList, alivePlayers, dt)
+      // Projectile target: por ahora usamos el primero (el ProjectileSystem
+      // chequea collision contra ese target). En F multi-target completo,
+      // querríamos que cada projectile recuerde su target original.
+      this.projectiles.update(alivePlayers[0]!, dt)
       this.waves.update(dt)
       this.waves.reapDead()
-      // Obstacles: hit-flash decay + AOE on death (handled inside .update).
-      // Then push every actor out of obstacles via collision response.
       if (this.obstacles) {
         this.obstacles.update(dt)
         for (const c of this.clients.values()) {
@@ -943,6 +973,7 @@ export class StickFightRoom {
           facingX: e.facingX,
           facingY: e.facingY,
           walkPhase: e.walkPhase,
+          attackKind: e.attackKind ?? '',
           attackTimer: e.attackTimer,
           attackDuration: e.attackDuration,
           hp: Math.max(0, Math.floor(e.hp)),
@@ -968,12 +999,28 @@ export class StickFightRoom {
       }
     }
 
+    const projectilesList: NetProjectile[] = []
+    if (this.projectiles) {
+      for (const p of this.projectiles.getAll()) {
+        projectilesList.push({
+          id: p.id,
+          type: p.type,
+          x: p.x,
+          y: p.y,
+          vx: p.vx,
+          vy: p.vy,
+          ownerId: p.ownerId,
+        })
+      }
+    }
+
     return {
       t: 'state',
       tick: this.tick,
       players,
       enemies: enemiesList,
       obstacles: obstaclesList,
+      projectiles: projectilesList,
       wave: this.wave,
       alive: this.alive,
       total: this.total,

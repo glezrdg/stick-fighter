@@ -202,6 +202,9 @@ export interface StateMsg {
   /** Static arena obstacles (barrels/crates/columns). Optional so old clients
    *  still render — empty array means the room has none. */
   obstacles?: ReadonlyArray<NetObstacle>
+  /** Projectiles en vuelo (flechas del player + orbs/fireballs enemigos).
+   *  Optional para retrocompat. */
+  projectiles?: ReadonlyArray<NetProjectile>
   wave: number
   alive: number
   total: number
@@ -280,6 +283,19 @@ export interface NetSkillCooldown {
   total: number
 }
 
+export interface NetProjectile {
+  id: string
+  /** 'orb' | 'arrow' | 'fireball'. El cliente mapea esto a un render distinto. */
+  type: string
+  x: number
+  y: number
+  vx: number
+  vy: number
+  /** 'player' = arrow del jugador (color claro, dmg friendly).
+   *  Cualquier otra cosa = projectile enemy (color rojo, hostil). */
+  ownerId: string
+}
+
 export interface NetEnemy {
   id: string
   typeId: string
@@ -290,6 +306,10 @@ export interface NetEnemy {
   facingX: number
   facingY: number
   walkPhase: number
+  /** Mismo discriminator que `Player.attackKind` (chop/spin/kick/poke/...).
+   *  Empty string = no atacando. El cliente lo mapea a la animación
+   *  correcta del StickmanRenderer en lugar de hardcoded 'chop'. */
+  attackKind?: string
   attackTimer: number
   attackDuration: number
   hp: number
@@ -324,6 +344,19 @@ export interface PingMsg {
   t: 'ping'
   /** Server-issued nonce. Client must echo it verbatim in `pong`. */
   nonce: number
+}
+
+/** Cliente cast'eó una skill activa. Server lo retransmite a todos los
+ *  peers para que el cliente local pinte particles/shockwave/aura burst en
+ *  la posición del caster. Coordenadas son world-space al momento del cast. */
+export interface SkillCastMsg {
+  t: 'skill:cast'
+  sessionId: string
+  skillId: string
+  x: number
+  y: number
+  facingX: number
+  facingY: number
 }
 
 /** Wave terminada → server pausa el tick global, ofrece 3 buffs. Ambos clientes
@@ -363,6 +396,7 @@ export type ServerMsg =
   | PeerLeftMsg
   | ErrorMsg
   | PingMsg
+  | SkillCastMsg
   | WaveBuffOfferMsg
   | WaveBuffVotesMsg
   | WaveBuffResolvedMsg

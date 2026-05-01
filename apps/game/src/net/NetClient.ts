@@ -141,6 +141,16 @@ class NetClient {
   private peerLeftListeners = new Set<
     (info: { sessionId: string; name: string; reason: string }) => void
   >()
+  private skillCastListeners = new Set<
+    (info: {
+      sessionId: string
+      skillId: string
+      x: number
+      y: number
+      facingX: number
+      facingY: number
+    }) => void
+  >()
   /** Last input we sent — used to coalesce duplicate emissions. */
   private lastSentInput: { dx: number; dy: number } = { dx: 0, dy: 0 }
 
@@ -243,6 +253,24 @@ class NetClient {
     this.peerLeftListeners.add(fn)
     return () => {
       this.peerLeftListeners.delete(fn)
+    }
+  }
+
+  /** Suscripción a casts de skills (locales o del peer). NetArenaScene
+   *  spawnea aura burst + shockwave + camera shake en cada cast. */
+  onSkillCast(
+    fn: (info: {
+      sessionId: string
+      skillId: string
+      x: number
+      y: number
+      facingX: number
+      facingY: number
+    }) => void,
+  ): () => void {
+    this.skillCastListeners.add(fn)
+    return () => {
+      this.skillCastListeners.delete(fn)
     }
   }
 
@@ -442,6 +470,18 @@ class NetClient {
       case 'ping':
         // No PongMsg in the protocol yet; we just rely on TCP keepalive +
         // browser's automatic WS ping reply. Reserved for future RTT tracking.
+        return
+      case 'skill:cast':
+        for (const fn of this.skillCastListeners) {
+          fn({
+            sessionId: msg.sessionId,
+            skillId: msg.skillId,
+            x: msg.x,
+            y: msg.y,
+            facingX: msg.facingX,
+            facingY: msg.facingY,
+          })
+        }
         return
       case 'wave-buff:offer':
         this.applyBuffOffer(msg)

@@ -1,5 +1,12 @@
 import { type AttackKind, getAura, getEnemyType, getSkin, getWeapon } from '@stick/content'
-import type { NetCosmetics, NetEnemy, NetObstacle, NetPlayer, StateMsg } from '@stick/shared'
+import type {
+  NetCosmetics,
+  NetEnemy,
+  NetObstacle,
+  NetPlayer,
+  NetProjectile,
+  StateMsg,
+} from '@stick/shared'
 import { ARENA, CAM_ZOOM, type Obstacle } from '@stick/sim'
 
 import { netClient, type RoomSnapshot } from '../net/NetClient'
@@ -60,6 +67,8 @@ export class NetArenaScene extends BaseScene {
   private playerGraphics!: Phaser.GameObjects.Graphics
   /** Aura glow alrededor de cada player. Se dibuja debajo de los actores. */
   private auraGraphics!: Phaser.GameObjects.Graphics
+  /** Layer para projectiles (flechas + orbs + fireballs). */
+  private projectileGraphics!: Phaser.GameObjects.Graphics
   private enemyGraphics = new Map<string, Phaser.GameObjects.Graphics>()
   private peerGraphics = new Map<string, Phaser.GameObjects.Graphics>()
   private particleGraphics!: Phaser.GameObjects.Graphics
@@ -95,6 +104,10 @@ export class NetArenaScene extends BaseScene {
 
   // Game-feel timers (cosmetic only, never sync'd to server).
   private cameraShake = 0
+  /** Combo local — se incrementa cuando self pega un hit cerca de un enemy.
+   *  Drivea el counter del HUD igual que SP. Se resetea tras 1.5s sin pegar. */
+  private localComboCount = 0
+  private localComboResetTimer = 0
 
   // Edge buffers for the next sendInput() call.
   private pendingAttack = false
@@ -145,6 +158,8 @@ export class NetArenaScene extends BaseScene {
     this.auraGraphics.setDepth(900)
     this.playerGraphics = this.add.graphics()
     this.playerGraphics.setDepth(1000)
+    this.projectileGraphics = this.add.graphics()
+    this.projectileGraphics.setDepth(940)
     this.particleGraphics = this.add.graphics()
     this.particleGraphics.setDepth(950)
     this.deathFxGraphics = this.add.graphics()
@@ -167,11 +182,20 @@ export class NetArenaScene extends BaseScene {
     // run sigue (el server mantiene la sala viva con el sobreviviente).
     this.busUnsubs.push(netClient.onPeerLeft(({ name }) => this.showPeerLeftToast(name)))
 
+    // Skill cast del peer (o nuestro): el server retransmite — spawneamos
+    // FX en el punto del caster. KiBlast/FinalFlash/GroundPound son cones
+    // invisibles sin esto; con el aura burst se sienten igual que en SP.
+    this.busUnsubs.push(
+      netClient.onSkillCast(({ sessionId, skillId, x, y }) =>
+        this.spawnSkillCastFx(sessionId, skillId, x, y),
+      ),
+    )
+
     this.netUnsub = netClient.subscribe((s) => {
       const prevOffer = this.snap.waveBuffOffer
       const prevPhase = this.snap.phase
       this.snap = s
-      // Server says it's over (or we got error/disconnected) → bail to menu.
+      // Server says it's over (or we got error/disconnected) → bail.
       if (s.phase === 'gameover' || s.phase === 'error' || s.phase === 'idle') {
         // Solo procesamos el gameover una vez (transición prev→now).
         if (s.phase === 'gameover' && prevPhase !== 'gameover') {
@@ -195,8 +219,13 @@ export class NetArenaScene extends BaseScene {
               reason: 'death',
             })
           }
+          // Vamos a GameOverScene en lugar de saltar al menú directo. El
+          // GameOverOverlay ya escucha `run:end` y muestra wave/kills/gold.
+          this.scene.start('GameOver')
+        } else {
+          // Error / idle: no hay run que mostrar, vamos al menú.
+          this.scene.start('MainMenu')
         }
-        this.scene.start('MainMenu')
         return
       }
       // Translate net offer transitions into local-bus events that the
@@ -218,6 +247,15 @@ export class NetArenaScene extends BaseScene {
 
   override update(_time: number, deltaMs: number): void {
     const dt = Math.max(0, Math.min(0.1, deltaMs / 1000))
+
+    // Combo timer local (no server-sync): si pasan >1.5s sin pegar, reset.
+    if (this.localComboResetTimer > 0) {
+      this.localComboResetTimer = Math.max(0, this.localComboResetTimer - dt)
+      if (this.localComboResetTimer === 0 && this.localComboCount > 0) {
+        this.localComboCount = 0
+        this.bus.emit('combo:reset', {})
+      }
+    }
 
     // If we're downed, the server ignores our input anyway — but suppressing
     // it locally means the joystick widget stops feeding the WS too, and the
@@ -273,6 +311,7 @@ export class NetArenaScene extends BaseScene {
     this.renderObstacles(state.obstacles ?? [])
     this.renderPlayers(state.players)
     this.renderEnemies(state.enemies)
+    this.renderProjectiles(state.projectiles ?? [])
     this.reapStaleEnemies(state.enemies)
     this.reapStalePlayers(state.players)
 
@@ -412,6 +451,11 @@ export class NetArenaScene extends BaseScene {
       }
     }
     // Enemies: HP down → slash + popup + combat:hit (drives sfxHit).
+    // Determinamos el attackerId localmente: si el self está mid-swing
+    // cuando un enemy pierde HP cerca, asumimos que fue self (drives combo
+    // local). Si no, asumimos peer. Heurística — se puede afinar si el
+    // server envía attribution explícita en el futuro.
+    const selfAttacking = !!me && me.attackTimer > 0
     for (const e of state.enemies) {
       const before = prev.enemies.find((q) => q.id === e.id)
       if (!before) continue
@@ -419,11 +463,23 @@ export class NetArenaScene extends BaseScene {
         const dmg = before.hp - e.hp
         this.particles.spawnSlashFx(e.x, e.y - 18, e.facingX, e.facingY)
         this.spawnDamagePopup(e.x, e.y - 30, dmg, true)
-        // Crit detection client-side: the server doesn't send a `crit` flag,
-        // so we approximate with "dmg above the typical floor" → critty.
-        // Audible difference is minor; visual popup keeps yellow regardless.
         const critGuess = dmg >= 30
-        this.bus.emit('combat:hit', { attackerId: 'self', targetId: e.id, dmg, crit: critGuess })
+        // Attribution heurística: si self está swingando + cerca, fue self.
+        // Threshold 80px ≈ alcance del melee. Si no cuadra, asumimos peer.
+        let attackerId = 'peer'
+        if (selfAttacking && me) {
+          const dx = e.x - me.x
+          const dy = e.y - me.y
+          if (Math.hypot(dx, dy) < 80) attackerId = 'self'
+        }
+        this.bus.emit('combat:hit', { attackerId, targetId: e.id, dmg, crit: critGuess })
+        // Combo del player local: solo cuando self pegó el hit. Se traduce en
+        // el contador del HUD que pulsa con cada cadena de hits.
+        if (attackerId === 'self') {
+          this.localComboCount++
+          this.localComboResetTimer = 1.5
+          this.bus.emit('combo:advance', { count: this.localComboCount })
+        }
       }
     }
     const liveIds = new Set(state.enemies.map((e) => e.id))
@@ -573,6 +629,70 @@ export class NetArenaScene extends BaseScene {
     }
   }
 
+  private renderProjectiles(projectiles: ReadonlyArray<NetProjectile>): void {
+    const g = this.projectileGraphics
+    g.clear()
+    for (const p of projectiles) {
+      const angle = Math.atan2(p.vy, p.vx)
+      if (p.type === 'arrow') {
+        // Flecha del player: shaft de madera + punta steel + fletching rojo.
+        const len = 18
+        const tx = p.x + Math.cos(angle) * len
+        const ty = p.y + Math.sin(angle) * len
+        const bx = p.x - Math.cos(angle) * len * 0.5
+        const by = p.y - Math.sin(angle) * len * 0.5
+        g.lineStyle(2, 0xa06820, 1)
+        g.beginPath()
+        g.moveTo(bx, by)
+        g.lineTo(tx, ty)
+        g.strokePath()
+        const tipBackX = tx - Math.cos(angle) * 4
+        const tipBackY = ty - Math.sin(angle) * 4
+        const perp = angle + Math.PI / 2
+        g.fillStyle(0xcfd8dc, 1)
+        g.fillTriangle(
+          tx,
+          ty,
+          tipBackX + Math.cos(perp) * 2.2,
+          tipBackY + Math.sin(perp) * 2.2,
+          tipBackX - Math.cos(perp) * 2.2,
+          tipBackY - Math.sin(perp) * 2.2,
+        )
+        g.fillStyle(0xc41a1a, 1)
+        const fX1 = bx + Math.cos(perp) * 3
+        const fY1 = by + Math.sin(perp) * 3
+        const fX2 = bx - Math.cos(perp) * 3
+        const fY2 = by - Math.sin(perp) * 3
+        const fbx = bx - Math.cos(angle) * 4
+        const fby = by - Math.sin(angle) * 4
+        g.fillTriangle(bx, by, fX1, fY1, fbx, fby)
+        g.fillTriangle(bx, by, fX2, fY2, fbx, fby)
+      } else if (p.type === 'spear') {
+        const tipLen = 16
+        const tx = p.x + Math.cos(angle) * tipLen
+        const ty = p.y + Math.sin(angle) * tipLen
+        const bx = p.x - Math.cos(angle) * tipLen * 0.6
+        const by = p.y - Math.sin(angle) * tipLen * 0.6
+        g.lineStyle(3, 0x5a3a1a, 1)
+        g.beginPath()
+        g.moveTo(bx, by)
+        g.lineTo(tx, ty)
+        g.strokePath()
+        g.fillStyle(0xcfd8dc, 1)
+        g.fillCircle(tx, ty, 3)
+      } else {
+        // Default: orb mágico violeta (ranged enemy projectile).
+        const r = 5
+        g.fillStyle(0x5a30b0, 0.4)
+        g.fillCircle(p.x, p.y, r * 1.6)
+        g.fillStyle(0xa872f0, 1)
+        g.fillCircle(p.x, p.y, r)
+        g.fillStyle(0xffffff, 0.85)
+        g.fillCircle(p.x, p.y, r * 0.45)
+      }
+    }
+  }
+
   private renderEnemies(enemies: ReadonlyArray<NetEnemy>): void {
     for (const e of enemies) {
       let g = this.enemyGraphics.get(e.id)
@@ -583,20 +703,29 @@ export class NetArenaScene extends BaseScene {
       }
       g.clear()
       g.setPosition(e.x, e.y)
+      // Color desde el JSON de content (mismo que SP), no un hash custom.
+      // attackKind: respetar lo que envía el server — antes lo forzábamos a
+      // 'chop' siempre y los archers se veían como brutes pegando.
+      let color = 0x202020
+      try {
+        color = parseInt(getEnemyType(e.typeId).color.slice(1), 16)
+      } catch {
+        // typeId desconocido → fallback gris oscuro
+      }
       const enemyState: StickmanRenderState = {
         vx: e.vx,
         vy: e.vy,
         facingX: e.facingX,
         facingY: e.facingY,
         walkPhase: e.walkPhase,
-        attackKind: e.attackTimer > 0 ? 'chop' : null,
+        attackKind: coerceKind(e.attackKind ?? ''),
         attackTimer: e.attackTimer,
         attackDuration: e.attackDuration || 0.5,
         attackDirX: e.facingX,
         attackDirY: e.facingY,
         hurtFlash: e.hurtFlash,
         iframes: 0,
-        color: enemyColorOf(e.typeId),
+        color,
       }
       this.stickman.draw(g, enemyState)
       this.updateEnemyOverlay(e)
@@ -747,6 +876,37 @@ export class NetArenaScene extends BaseScene {
     }
   }
 
+  /** Visuales de un skill cast (local o del peer). El server emite un
+   *  `skill:cast` cuando cualquier cliente dispara una activa; pintamos
+   *  aura burst + shockwave en el punto del caster, igual que SP. Para
+   *  skills específicas con FX extra (groundPound shockwave grande,
+   *  finalFlash chorro) lo extendemos por id. */
+  private spawnSkillCastFx(sessionId: string, skillId: string, x: number, y: number): void {
+    // Color del aura del caster: si es nuestro lo sacamos del save, si es
+    // el peer lo sacamos de la cosmetics que viaja en su NetPlayer.
+    let color = 0xffd54a
+    const me = this.snap.state?.players.find((p) => p.sessionId === sessionId)
+    if (me?.cosmetics?.aura) {
+      try {
+        color = parseInt(getAura(me.cosmetics.aura).color.slice(1), 16)
+      } catch {
+        // unknown aura → default dorado
+      }
+    }
+    const cy = y - 24
+    this.particles.spawnAuraBurst(x, cy, color, 30)
+    if (skillId === 'groundPound') {
+      this.particles.spawnShockwave(x, y, color, 32)
+      this.cameraShake = Math.max(this.cameraShake, 0.32)
+    } else if (skillId === 'kiBlast' || skillId === 'finalFlash') {
+      this.particles.spawnShockwave(x, cy, color, 24)
+      this.cameraShake = Math.max(this.cameraShake, 0.22)
+    } else {
+      // dash, swordTornado, heal — solo aura burst sutil.
+      this.cameraShake = Math.max(this.cameraShake, 0.1)
+    }
+  }
+
   /** Toast cuando el peer se desconecta. Pinta un texto centrado-superior
    *  por 4s y luego desaparece. El run continúa solo (server mantiene la sala). */
   private showPeerLeftToast(name: string): void {
@@ -860,12 +1020,6 @@ export class NetArenaScene extends BaseScene {
     this.lastAlive = -1
     this.lastTotal = -1
   }
-}
-
-function enemyColorOf(typeId: string): number {
-  let hash = 0
-  for (const c of typeId) hash = (hash * 31 + c.charCodeAt(0)) | 0
-  return 0x202020 + (Math.abs(hash) & 0x3f3f3f)
 }
 
 function hexToNum(hex: string): number {
