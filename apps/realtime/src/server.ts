@@ -90,6 +90,32 @@ async function main() {
   const httpServer = createServer(app)
   const wss = new WebSocketServer({ server: httpServer, path: '/ws' })
 
+  // WS-level keepalive. Sin esto, Traefik (reverse proxy) corta conexiones
+  // ociosas a los ~60s y el cliente ve "connection lost" sin razón. Mandamos
+  // ping cada 25s; si un socket no responde pong en el siguiente ciclo, lo
+  // terminamos para que el room reaccione (handleSocketClose → grace de 60s).
+  // Browser responde pong solo (transparent al app code).
+  const HEARTBEAT_MS = 25_000
+  const heartbeat = setInterval(() => {
+    for (const ws of wss.clients) {
+      const sock = ws as WebSocket & { isAlive?: boolean }
+      if (sock.isAlive === false) {
+        try {
+          sock.terminate()
+        } catch {
+          // ignore
+        }
+        continue
+      }
+      sock.isAlive = false
+      try {
+        sock.ping()
+      } catch {
+        // ignore
+      }
+    }
+  }, HEARTBEAT_MS)
+
   // Map ws → (room, client). When a connection upgrades we don't yet know
   // which room it belongs to; the first message is the handshake (host/join)
   // and only then we register it. Until then the entry is null.
@@ -97,7 +123,14 @@ async function main() {
 
   wss.on('connection', (ws, req) => {
     sockets.set(ws, null)
+    ;(ws as WebSocket & { isAlive?: boolean }).isAlive = true
     console.info(`[ws] connection from ${req.socket.remoteAddress}`)
+
+    // Browser responde pong automáticamente al ping frame del server. Acá
+    // solo marcamos el socket como vivo para el próximo ciclo del heartbeat.
+    ws.on('pong', () => {
+      ;(ws as WebSocket & { isAlive?: boolean }).isAlive = true
+    })
 
     ws.on('message', (raw) => {
       const text = typeof raw === 'string' ? raw : raw.toString('utf-8')
@@ -210,6 +243,7 @@ async function main() {
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     process.on(signal, () => {
       console.info(`[realtime] received ${signal}, gracefully closing…`)
+      clearInterval(heartbeat)
       shutdownAll()
       wss.close(() => {
         httpServer.close(() => process.exit(0))

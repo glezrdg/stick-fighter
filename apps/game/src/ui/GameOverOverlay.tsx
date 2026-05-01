@@ -2,6 +2,8 @@ import type { SaveCurrent } from '@stick/shared'
 import { type EventBus } from '@stick/sim'
 import { type Component, Show, createSignal, onCleanup } from 'solid-js'
 
+import { netClient, type RoomSnapshot } from '../net/NetClient'
+
 import { LeaderboardPanel } from './LeaderboardPanel'
 import { PrimaryButton, SecondaryButton } from './MainMenuOverlay'
 
@@ -30,6 +32,7 @@ export const GameOverOverlay: Component<GameOverOverlayProps> = (props) => {
     status: 'pending',
     rank: null,
   })
+  const [snap, setSnap] = createSignal<RoomSnapshot>(netClient.getSnapshot())
 
   const offEnter = props.bus.on('ui:scene:enter', ({ name }) => {
     setVisible(name === 'gameover')
@@ -41,18 +44,60 @@ export const GameOverOverlay: Component<GameOverOverlayProps> = (props) => {
   const offSubmitted = props.bus.on('run:submitted', ({ status, rank }) => {
     setSubmit({ status, rank })
   })
+  const offNet = netClient.subscribe((s) => setSnap(s))
 
   onCleanup(() => {
     offEnter()
     offRunEnd()
     offSubmitted()
+    offNet()
   })
 
+  /** True cuando el gameover es de una sala multiplayer activa. Multi y SP
+   *  comparten el overlay pero los botones difieren: en multi REINTENTAR
+   *  pide consenso y mantiene el room; en SP arranca un Arena solo nuevo. */
+  const isMulti = (): boolean => snap().sessionId !== null && snap().code !== null
+
+  /** Cuántos clientes activos pidieron restart vs cuántos faltan. Null en SP
+   *  o si el server aún no broadcastea votes (antes del primer click). */
+  const restartProgress = (): { mine: boolean; mineCount: number; needed: number } | null => {
+    const s = snap()
+    if (!isMulti() || !s.restartVotes) return null
+    const mine = s.sessionId !== null && s.restartVotes.votes.includes(s.sessionId)
+    return { mine, mineCount: s.restartVotes.votes.length, needed: s.restartVotes.needed }
+  }
+
+  /** Label dinámico del botón principal. En multi mostramos el contador de
+   *  votos y bloqueamos doble-click. */
+  const retryLabel = (): string => {
+    if (!isMulti()) return '⚔ REINTENTAR'
+    const p = restartProgress()
+    if (!p || p.needed <= 1) return '⚔ REINTENTAR'
+    if (p.mine) return `⏳ REINTENTAR (${p.mineCount}/${p.needed})`
+    return `⚔ REINTENTAR (${p.mineCount}/${p.needed})`
+  }
+
+  const retryDisabled = (): boolean => {
+    const p = restartProgress()
+    return !!p && p.mine && p.mineCount < p.needed
+  }
+
   const retry = () => {
+    if (isMulti()) {
+      // En multi pedimos restart al server; el snapshot va a actualizarse con
+      // los votes y, cuando todos los activos consenten, phase pasa a 'lobby'.
+      // El listener de phase abajo nos saca del overlay automáticamente.
+      netClient.requestRestart()
+      return
+    }
     setVisible(false)
     props.bus.emit('ui:menu:start-run', {})
   }
   const back = () => {
+    if (isMulti()) {
+      // Salir voluntariamente del room; el peer queda solo (o decidirá leave también).
+      void netClient.leave()
+    }
     setVisible(false)
     props.bus.emit('ui:menu:return', {})
   }
@@ -117,8 +162,23 @@ export const GameOverOverlay: Component<GameOverOverlayProps> = (props) => {
             'max-width': '320px',
           }}
         >
-          <PrimaryButton label="⚔ REINTENTAR" onClick={retry} />
-          <SecondaryButton label="VOLVER" onClick={back} />
+          <PrimaryButton label={retryLabel()} onClick={retry} disabled={retryDisabled()} />
+          <Show when={restartProgress()?.mine && (restartProgress()?.needed ?? 0) > 1}>
+            <div
+              style={{
+                'font-family': "'Russo One', sans-serif",
+                'font-size': '12px',
+                color: '#aaa',
+                'letter-spacing': '2px',
+                'text-shadow': '1px 1px 0 #000',
+                'text-align': 'center',
+              }}
+            >
+              ESPERANDO AL OTRO ({restartProgress()?.mineCount ?? 0}/
+              {restartProgress()?.needed ?? 0})…
+            </div>
+          </Show>
+          <SecondaryButton label={isMulti() ? 'SALIR DE LA SALA' : 'VOLVER'} onClick={back} />
         </div>
 
         <div style={{ width: '100%', 'max-width': '420px', 'margin-top': '6px' }}>

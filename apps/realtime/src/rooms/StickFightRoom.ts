@@ -9,6 +9,7 @@ import {
   type NetPlayer,
   type NetProjectile,
   type PhaseMsg,
+  type RestartVotesMsg,
   type ServerMsg,
   type StateMsg,
   type WaveBuffEndMsg,
@@ -201,6 +202,11 @@ export class StickFightRoom {
    *  ven las 3 cartas y deben votar. Se limpia al resolver. */
   private pendingBuffPhase: PendingBuffPhase | null = null
 
+  /** Set de sessionIds que pidieron `restart` desde gameover. Cuando el
+   *  set ≥ activos en la sala, el room se resetea a lobby. Se limpia al
+   *  resetear o al transicionar phase fuera de gameover. */
+  private restartVotes = new Set<string>()
+
   constructor(
     code: string,
     private readonly onDispose: (code: string) => void,
@@ -339,6 +345,9 @@ export class StickFightRoom {
       case 'wave-buff:vote':
         this.handleBuffVote(client, msg.buffId)
         return
+      case 'restart':
+        this.handleRestartVote(client)
+        return
       case 'host':
       case 'join':
         // Already-connected client trying to handshake again — ignore.
@@ -347,17 +356,14 @@ export class StickFightRoom {
   }
 
   /**
-   * Disconnect (network drop, mobile background, tab closed). En lobby
-   * removemos directo (no hay nada que preservar). En playing o gameover
-   * empezamos una ventana de gracia: el slot queda zombie por
-   * `RECONNECT_GRACE_MS` antes de matarse. Mientras tanto el cliente
-   * puede reclamarlo con un `rejoin` que matchee sessionId.
+   * Disconnect (network drop, mobile background, tab closed). En CUALQUIER
+   * fase damos grace de RECONNECT_GRACE_MS antes de matar el slot — incluso
+   * en lobby, porque mobile Safari mata el WS al backgroundear y el usuario
+   * vuelve a la tab esperando que su sala siga ahí. Con grace podemos
+   * reclaimear el slot vía `rejoin`. Si el grace expira sin reconnect, se
+   * limpia (ver tickOnce / lobby tick).
    */
   handleSocketClose(client: RoomClient): void {
-    if (this.phase === 'lobby') {
-      this.removeClient(client.sessionId, 'timeout')
-      return
-    }
     if (client.disconnectedAt !== null) return // ya marcado
     client.ws = null
     client.disconnectedAt = Date.now()
@@ -367,9 +373,32 @@ export class StickFightRoom {
     client.input.attack = false
     client.input.shoot = false
     client.input.skill = null
+    // Si estaba ready en lobby, lo desreadeamos (no podemos arrancar sin él).
+    if (this.phase === 'lobby') client.ready = false
     console.info(
-      `[stick_fight] ${this.code}: ${client.sessionId} (${client.name}) disconnected — ${RECONNECT_GRACE_MS / 1000}s grace`,
+      `[stick_fight] ${this.code}: ${client.sessionId} (${client.name}) disconnected (phase=${this.phase}) — ${RECONNECT_GRACE_MS / 1000}s grace`,
     )
+    // En lobby el room no tickea — agendamos un timer one-shot para reapar
+    // si el grace expira sin reconnect.
+    if (this.phase === 'lobby') {
+      setTimeout(() => this.reapLobbyZombiesIfStillThere(), RECONNECT_GRACE_MS + 500)
+    }
+  }
+
+  /** En lobby no hay tick loop — chequeamos zombies on-demand vía setTimeout
+   *  agendado desde handleSocketClose. Si después del grace siguen zombies,
+   *  se limpian. Si reconnectaron antes, no-op. */
+  private reapLobbyZombiesIfStillThere(): void {
+    if (this.phase !== 'lobby') return
+    const now = Date.now()
+    const expired: string[] = []
+    for (const c of this.clients.values()) {
+      if (c.disconnectedAt !== null && now - c.disconnectedAt >= RECONNECT_GRACE_MS) {
+        expired.push(c.sessionId)
+      }
+    }
+    for (const sid of expired) this.removeClient(sid, 'timeout')
+    if (expired.length > 0) this.broadcast(this.lobbyMsg())
   }
 
   /**
@@ -778,6 +807,94 @@ export class StickFightRoom {
     } satisfies PhaseMsg)
   }
 
+  // ----------------------------------------------------- restart from gameover
+
+  /** Cliente apretó "REINTENTAR" en gameover. Necesitamos consenso de todos
+   *  los activos (ws !== null). Cuando llegamos al cuórum, se resetea la sala
+   *  a lobby manteniendo a los mismos players (mismo sessionId, mismas
+   *  cosmetics/loadout) — no hay que rehacer el código de 4 letras. */
+  private handleRestartVote(client: RoomClient): void {
+    if (this.phase !== 'gameover') return
+    if (!client.ws) return // zombie no vota
+    if (this.restartVotes.has(client.sessionId)) return
+    this.restartVotes.add(client.sessionId)
+    console.info(
+      `[stick_fight] ${this.code}: ${client.sessionId} (${client.name}) voted restart (${this.restartVotes.size}/${this.activeClientsCount()})`,
+    )
+    this.broadcast(this.restartVotesMsg())
+    if (this.allActiveVotedRestart()) this.restartRoom()
+  }
+
+  private allActiveVotedRestart(): boolean {
+    let needed = 0
+    for (const c of this.clients.values()) {
+      if (!c.ws) continue
+      if (!this.restartVotes.has(c.sessionId)) return false
+      needed++
+    }
+    return needed > 0
+  }
+
+  private restartVotesMsg(): RestartVotesMsg {
+    return {
+      t: 'restart:votes',
+      votes: Array.from(this.restartVotes),
+      needed: this.activeClientsCount(),
+    }
+  }
+
+  /** Resetea el room a lobby manteniendo sessions/cosmetics/loadout para que
+   *  los mismos players puedan re-equipar y mandarle a `ready` otra vez. Esto
+   *  es co-op "play again" — no se cierra la sala, se rebobina. */
+  private restartRoom(): void {
+    console.info(`[stick_fight] ${this.code}: restart consensus reached, reset to lobby`)
+    this.phase = 'lobby'
+    this.tick = 0
+    this.gold = 0
+    this.wave = 0
+    this.alive = 0
+    this.total = 0
+    this.kills = 0
+    this.runStartedAt = 0
+    this.seed = 0
+    this.pendingBuffPhase = null
+    this.restartVotes.clear()
+    if (this.tickHandle) {
+      clearInterval(this.tickHandle)
+      this.tickHandle = null
+    }
+    // Tear down sim systems — startRun los recrea con seed nuevo + bus limpio.
+    this.bus = null
+    this.rng = null
+    this.waves = null
+    this.enemies = null
+    this.projectiles = null
+    this.obstacles = null
+    // Reset per-client state. Preservamos sessionId/cosmetics/loadout pero
+    // tiramos sim/combat/skills/runState — startRun los rehidrata.
+    for (const c of this.clients.values()) {
+      c.ready = false
+      c.downed = false
+      c.downedAt = null
+      c.killsByPeerSinceDown = 0
+      c.runBuffs = emptyRunBuffs()
+      c.input.dx = 0
+      c.input.dy = 0
+      c.input.attack = false
+      c.input.shoot = false
+      c.input.skill = null
+      // El sim concreto lo recrea startRun (createPlayer con maxHp efectivo
+      // basado en el loadout vigente). Por ahora reseteamos hp para que
+      // si algún broadcast intermedio se cuela, no se vea ningún player muerto.
+      c.sim.hp = c.sim.maxHp
+    }
+    // Notificar a ambos clientes: phase=lobby + lobby roster con todos
+    // sin ready. NetClient mapea phase='lobby' al snapshot, GameOverOverlay
+    // se desmonta y MainMenuOverlay/LobbyOverlay reaparece.
+    this.broadcast({ t: 'phase', phase: 'lobby', seed: null } satisfies PhaseMsg)
+    this.broadcast(this.lobbyMsg())
+  }
+
   // ----------------------------------------------------- wave-buff voting
 
   /** Abre votación entre waves. Pausa el sim global, ofrece 3 cartas, espera
@@ -941,10 +1058,17 @@ export class StickFightRoom {
     const client = this.clients.get(sessionId)
     if (!client) return
     this.clients.delete(sessionId)
+    this.restartVotes.delete(sessionId)
     try {
       client.ws?.close()
     } catch {
       // ignore — already closed
+    }
+    // Si en gameover quedaba un solo activo y el otro se fue, su voto previo
+    // de restart ahora completa el cuórum unilateralmente.
+    if (this.phase === 'gameover' && this.clients.size > 0 && this.allActiveVotedRestart()) {
+      this.restartRoom()
+      return
     }
 
     if (this.clients.size === 0) {

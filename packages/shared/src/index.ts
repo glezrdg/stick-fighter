@@ -48,6 +48,8 @@ export {
   NetCosmeticsSchema,
   NetLoadoutSchema,
   RejoinReqSchema,
+  type RestartReq,
+  type RestartVotesMsg,
   encodeMsg,
   parseMsg,
   type ClientMsg,

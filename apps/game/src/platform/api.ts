@@ -33,34 +33,91 @@ interface AuthedFetchOptions extends RequestInit {
   withAuth?: boolean
 }
 
-async function refreshTokens(): Promise<boolean> {
-  const auth = AuthStore.get()
-  if (!auth) return false
+/** Decodea el payload de un JWT sin verificar firma. Retorna null si no
+ *  es base64url-decodable (token corrupto o no es un JWT). Se usa SOLO
+ *  para leer `exp` y decidir si conviene refrescar antes de mandarlo —
+ *  la validación real la hace el server. */
+function decodeJwtPayload(token: string): { exp?: number } | null {
   try {
-    const res = await fetch(`${API_BASE}/auth/refresh`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ refreshToken: auth.refreshToken }),
-    })
-    if (!res.ok) {
-      AuthStore.set(null)
-      return false
-    }
-    const json: unknown = await res.json()
-    const parsed = AuthResponseSchema.safeParse(json)
-    if (!parsed.success) {
-      AuthStore.set(null)
-      return false
-    }
-    AuthStore.set({
-      user: parsed.data.user,
-      accessToken: parsed.data.accessToken,
-      refreshToken: parsed.data.refreshToken,
-    })
-    return true
+    const parts = token.split('.')
+    if (parts.length < 2) return null
+    const [, payloadB64] = parts
+    if (!payloadB64) return null
+    const padded = payloadB64.replace(/-/g, '+').replace(/_/g, '/')
+    const padding = padded.length % 4 === 0 ? '' : '='.repeat(4 - (padded.length % 4))
+    const json = atob(padded + padding)
+    return JSON.parse(json) as { exp?: number }
   } catch {
-    return false
+    return null
   }
+}
+
+/** Considera un access token "stale" si vence en menos de SAFETY_SEC.
+ *  Margen amplio para cubrir runs de varios minutos (la sala de multi
+ *  puede durar 10+ min sin pedir HTTP — si el token expira mid-run el
+ *  rejoin falla con auth-failed y vemos "connection lost"). */
+const REFRESH_SAFETY_SEC = 120
+
+function isAccessTokenStale(token: string): boolean {
+  const payload = decodeJwtPayload(token)
+  if (!payload || typeof payload.exp !== 'number') return false
+  const nowSec = Math.floor(Date.now() / 1000)
+  return payload.exp - nowSec < REFRESH_SAFETY_SEC
+}
+
+/** Single-flight refresh: si dos llamadas concurrentes piden refresh, ambas
+ *  esperan la misma promesa. Sin esto, dos requests concurrentes + 401
+ *  disparaban dos refreshes y uno invalidaba el refresh token del otro. */
+let refreshInflight: Promise<boolean> | null = null
+
+async function refreshTokens(): Promise<boolean> {
+  if (refreshInflight) return refreshInflight
+  refreshInflight = (async () => {
+    const auth = AuthStore.get()
+    if (!auth) return false
+    try {
+      const res = await fetch(`${API_BASE}/auth/refresh`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refreshToken: auth.refreshToken }),
+      })
+      if (!res.ok) {
+        AuthStore.set(null)
+        return false
+      }
+      const json: unknown = await res.json()
+      const parsed = AuthResponseSchema.safeParse(json)
+      if (!parsed.success) {
+        AuthStore.set(null)
+        return false
+      }
+      AuthStore.set({
+        user: parsed.data.user,
+        accessToken: parsed.data.accessToken,
+        refreshToken: parsed.data.refreshToken,
+      })
+      return true
+    } catch {
+      return false
+    }
+  })()
+  try {
+    return await refreshInflight
+  } finally {
+    refreshInflight = null
+  }
+}
+
+/** Devuelve un access token vigente — si quedan menos de REFRESH_SAFETY_SEC
+ *  para vencer, refresca primero. NetClient lo usa antes de host/join/rejoin
+ *  para evitar que el server cierre el WS por auth-failed mid-session. */
+export async function getValidAccessToken(): Promise<string | undefined> {
+  const auth = AuthStore.get()
+  if (!auth) return undefined
+  if (!isAccessTokenStale(auth.accessToken)) return auth.accessToken
+  const ok = await refreshTokens()
+  if (!ok) return undefined
+  return AuthStore.get()?.accessToken
 }
 
 async function authedFetch(path: string, opts: AuthedFetchOptions = {}): Promise<Response | null> {

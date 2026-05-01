@@ -115,6 +115,10 @@ export type GameEvents = {
   'ui:menu:start-netarena': Record<string, never>
   /** User pressed "BACK" in GameOver — Phaser switches to MainMenu. */
   'ui:menu:return': Record<string, never>
+  /** Server reseteó la sala multi a 'lobby' tras consenso de restart. La
+   *  GameOverScene transitions a MainMenu y emite esto para que main.tsx
+   *  reabra el LobbyOverlay con la sala vigente. */
+  'ui:menu:open-lobby': Record<string, never>
 
   // ---- Input (raw) ----------------------------------------- client-only
   // Per-client physical input. The InputController emits these from the

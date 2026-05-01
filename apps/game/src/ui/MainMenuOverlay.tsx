@@ -39,11 +39,16 @@ export const MainMenuOverlay: Component<MainMenuOverlayProps> = (props) => {
   })
   const offShop = props.bus.on('ui:shop:open', () => setRev((r) => r + 1))
   const offShopClose = props.bus.on('ui:shop:close', () => setRev((r) => r + 1))
+  // Multi: tras un restart desde gameover, GameOverScene navega al MainMenu
+  // y emite este evento — re-abrimos el LobbyOverlay sin que el usuario tenga
+  // que rehacer el código.
+  const offReopenLobby = props.bus.on('ui:menu:open-lobby', () => setLobbyOpen(true))
   const offAuth = AuthStore.subscribe((state) => setAuth(state))
   onCleanup(() => {
     offEnter()
     offShop()
     offShopClose()
+    offReopenLobby()
     offAuth()
   })
 
@@ -355,21 +360,29 @@ const MenuStat: Component<{ icon: string; label: string }> = (props) => (
   </div>
 )
 
-export const PrimaryButton: Component<{ label: string; onClick: () => void }> = (props) => (
+export const PrimaryButton: Component<{
+  label: string
+  onClick: () => void
+  disabled?: boolean
+}> = (props) => (
   <button
     type="button"
-    onClick={props.onClick}
+    onClick={props.disabled ? undefined : props.onClick}
+    disabled={props.disabled}
     style={{
       'font-family': "'Russo One', sans-serif",
       'font-size': '15px',
       'letter-spacing': '3px',
       'text-transform': 'uppercase',
       color: '#fff',
-      background: 'linear-gradient(180deg, #ff3030, #8b0000)',
+      background: props.disabled
+        ? 'linear-gradient(180deg, #555, #2a0000)'
+        : 'linear-gradient(180deg, #ff3030, #8b0000)',
       border: '2px solid #ffd54a',
       'border-radius': '10px',
       padding: '14px 18px',
-      cursor: 'pointer',
+      cursor: props.disabled ? 'not-allowed' : 'pointer',
+      opacity: props.disabled ? 0.7 : 1,
       'box-shadow':
         '0 4px 0 #4a0000, 0 0 18px rgba(255, 42, 42, 0.45), inset 0 1px 0 rgba(255,255,255,0.15)',
       'text-shadow': '1px 1px 0 #000',

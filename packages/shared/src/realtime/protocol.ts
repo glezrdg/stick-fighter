@@ -130,6 +130,16 @@ export interface WaveBuffVoteReq {
   buffId: string
 }
 
+/** Cliente pide reiniciar el run desde la pantalla de gameover, manteniendo
+ *  la sala viva con los mismos players. Server requiere consenso de todos
+ *  los activos: cuando el último activo lo pide, se resetea wave/HP/buffs/
+ *  cosmetics y la sala vuelve a phase='lobby'. Si un peer hace `leave`
+ *  en gameover, el restante puede pedir restart unilateralmente.
+ *  Idempotente: pedirlo dos veces del mismo cliente cuenta una sola. */
+export interface RestartReq {
+  t: 'restart'
+}
+
 /** Reconexión a una sala existente preservando el slot. El server mantiene
  *  un grace window de ~60s tras un disconnect; durante ese período el slot
  *  queda "zombie" y un nuevo socket puede reclamarlo enviando este mensaje
@@ -152,6 +162,7 @@ export type ClientMsg =
   | InputReq
   | LeaveReq
   | WaveBuffVoteReq
+  | RestartReq
 
 // ============================================================================
 // Server → Client
@@ -413,6 +424,18 @@ export interface WaveBuffEndMsg {
   wave: number
 }
 
+/** Estado de votos para reiniciar el run desde gameover. Server lo
+ *  broadcastea cada vez que cambia (alguien voto / alguien hizo leave). El
+ *  cliente lo usa para mostrar "esperando al peer (1/2)". */
+export interface RestartVotesMsg {
+  t: 'restart:votes'
+  /** sessionId de cada player que ya pidió restart. */
+  votes: ReadonlyArray<string>
+  /** Total de clientes activos en la sala (ws !== null). El cliente
+   *  computa "x de y" sin necesidad de lookups extra. */
+  needed: number
+}
+
 export type ServerMsg =
   | LobbyMsg
   | PhaseMsg
@@ -425,6 +448,7 @@ export type ServerMsg =
   | WaveBuffVotesMsg
   | WaveBuffResolvedMsg
   | WaveBuffEndMsg
+  | RestartVotesMsg
 
 // ============================================================================
 // Helpers

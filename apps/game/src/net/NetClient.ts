@@ -24,6 +24,7 @@ import {
   type NetLoadout,
   type ServerMsg,
   type StateMsg,
+  type RestartVotesMsg,
   type WaveBuffEndMsg,
   type WaveBuffOfferMsg,
   type WaveBuffResolvedMsg,
@@ -32,7 +33,7 @@ import {
   parseMsg,
 } from '@stick/shared'
 
-import { AuthStore } from '../platform/authStore'
+import { getValidAccessToken } from '../platform/api'
 
 /**
  * Derive what we should send the server about how this client wants to look.
@@ -119,6 +120,10 @@ export interface RoomSnapshot {
     gold: number
     durationSec: number
   } | null
+  /** Restart consensus desde gameover. Cliente lo lee para mostrar
+   *  "REINTENTAR (1/2)" y "esperando al peer". Null cuando no hay restart
+   *  pendiente o no estamos en gameover. */
+  restartVotes: { votes: ReadonlyArray<string>; needed: number } | null
 }
 
 const initialSnapshot: RoomSnapshot = {
@@ -132,12 +137,20 @@ const initialSnapshot: RoomSnapshot = {
   waveBuffOffer: null,
   waveBuffVotes: [],
   gameoverSummary: null,
+  restartVotes: null,
 }
 
 class NetClient {
   private ws: WebSocket | null = null
   private snap: RoomSnapshot = initialSnapshot
   private listeners = new Set<(s: RoomSnapshot) => void>()
+  /** Set true durante un tryRejoin loop activo, evita duplicar intentos
+   *  cuando el visibilitychange dispara mientras ya hay backoff en curso. */
+  private rejoining = false
+  /** Listener instalado una vez para reaccionar al volver del background.
+   *  Mobile Safari mata WS al backgroundear ~30s y al volver tab vemos
+   *  conexión perdida — esto la trata de reanimar automáticamente. */
+  private visibilityHookInstalled = false
   private resolvedListeners = new Set<(msg: WaveBuffResolvedMsg) => void>()
   private peerLeftListeners = new Set<
     (info: { sessionId: string; name: string; reason: string }) => void
@@ -180,10 +193,11 @@ class NetClient {
     cosmetics?: NetCosmetics,
     loadout?: NetLoadout,
   ): Promise<RoomSnapshot | null> {
+    const accessToken = await getValidAccessToken()
     return this.connectThen({
       t: 'host',
       name,
-      accessToken: this.token(),
+      ...(accessToken ? { accessToken } : {}),
       ...(cosmetics ? { cosmetics } : {}),
       ...(loadout ? { loadout } : {}),
     })
@@ -196,11 +210,12 @@ class NetClient {
     cosmetics?: NetCosmetics,
     loadout?: NetLoadout,
   ): Promise<RoomSnapshot | null> {
+    const accessToken = await getValidAccessToken()
     return this.connectThen({
       t: 'join',
       name,
       code: code.toUpperCase(),
-      accessToken: this.token(),
+      ...(accessToken ? { accessToken } : {}),
       ...(cosmetics ? { cosmetics } : {}),
       ...(loadout ? { loadout } : {}),
     })
@@ -237,6 +252,13 @@ class NetClient {
    *  cuando ambos votan o cuando el timeout expira (autopick). */
   sendWaveBuffVote(buffId: string): void {
     this.send({ t: 'wave-buff:vote', buffId })
+  }
+
+  /** Pide restart desde la pantalla de gameover. Server requiere consenso
+   *  de todos los clientes activos. Cuando llegue, snapshot.phase pasa a
+   *  'lobby' y los players ven el LobbyOverlay con la sala intacta. */
+  requestRestart(): void {
+    this.send({ t: 'restart' })
   }
 
   /** Suscripción ad-hoc a la resolución de la carta. NetArenaScene la usa
@@ -290,10 +312,6 @@ class NetClient {
 
   // ------------------------------------------------------------------ inner
 
-  private token(): string | undefined {
-    return AuthStore.get()?.accessToken
-  }
-
   /**
    * Open a WS, send the handshake, and resolve once the server replies with
    * either a `lobby` ack (success) or `error`. Subsequent server messages
@@ -319,6 +337,7 @@ class NetClient {
     }
 
     this.update({ ...initialSnapshot, phase: 'connecting' })
+    this.installVisibilityHook()
 
     return new Promise((resolve) => {
       const ws = new WebSocket(REALTIME_URL!)
@@ -356,9 +375,14 @@ class NetClient {
             error: this.snap.error ?? { code: 'internal', msg: 'connection closed' },
           })
           resolve(null)
-        } else if (this.snap.phase === 'playing' && this.snap.code && this.snap.sessionId) {
-          // Disconnect during play → server holds our slot for ~60s. Try to
-          // reconnect via `rejoin` with backoff. Si falla todo, caemos a error.
+        } else if (
+          (this.snap.phase === 'playing' || this.snap.phase === 'lobby') &&
+          this.snap.code &&
+          this.snap.sessionId
+        ) {
+          // Disconnect mid-session → server holds our slot for ~60s en CUALQUIER
+          // phase (incluyendo lobby). Intentamos reconnect via `rejoin` con
+          // backoff. Si falla todo, caemos a error.
           this.tryRejoin(this.snap.code, this.snap.sessionId)
         } else if (this.snap.phase !== 'gameover') {
           this.update({
@@ -382,8 +406,10 @@ class NetClient {
    * hasta que el server diga `rejoin-failed` (slot expiró).
    */
   private tryRejoin(code: string, sessionId: string, attempt = 1): void {
+    this.rejoining = true
     if (attempt > 30) {
       // 75s ≈ pasamos el grace window — abandonar.
+      this.rejoining = false
       this.update({
         ...this.snap,
         phase: 'error',
@@ -391,13 +417,28 @@ class NetClient {
       })
       return
     }
-    if (!REALTIME_URL) return
+    if (!REALTIME_URL) {
+      this.rejoining = false
+      return
+    }
     const ws = new WebSocket(REALTIME_URL)
     this.ws = ws
     let settled = false
 
     ws.addEventListener('open', () => {
-      ws.send(encodeMsg({ t: 'rejoin', code, sessionId, accessToken: this.token() }))
+      // Refresca si el access token está por vencer; sino el server WS rechaza
+      // con auth-failed y entramos en loop de "connection lost".
+      void getValidAccessToken().then((accessToken) => {
+        if (ws.readyState !== WebSocket.OPEN) return
+        ws.send(
+          encodeMsg({
+            t: 'rejoin',
+            code,
+            sessionId,
+            ...(accessToken ? { accessToken } : {}),
+          }),
+        )
+      })
     })
     ws.addEventListener('message', (ev) => {
       const text = typeof ev.data === 'string' ? ev.data : ''
@@ -407,10 +448,14 @@ class NetClient {
       if (!settled) {
         if (msg.t === 'lobby') {
           settled = true
-          // Mantenemos `phase: 'playing'` por si llega antes que el próximo state.
-          this.update({ ...this.snap, phase: 'playing', error: null })
+          this.rejoining = false
+          // Conservamos la phase actual del snapshot (el server podía estar en
+          // 'lobby' o 'playing'); applyServerMsg ya la setea según viene del
+          // mensaje. Si volvimos a un room en lobby, no forzamos 'playing'.
+          this.update({ ...this.snap, error: null })
         } else if (msg.t === 'error') {
           settled = true
+          this.rejoining = false
           if (msg.code === 'rejoin-failed') {
             this.update({
               ...this.snap,
@@ -438,19 +483,28 @@ class NetClient {
       case 'lobby':
         this.applyLobby(msg)
         return
-      case 'phase':
+      case 'phase': {
+        const nextPhase: ConnectionPhase =
+          msg.phase === 'playing' ? 'playing' : msg.phase === 'gameover' ? 'gameover' : 'lobby'
+        // Saliendo de gameover (post-restart) → tirá el summary y los votes.
+        const leavingGameover = this.snap.phase === 'gameover' && nextPhase !== 'gameover'
         this.update({
           ...this.snap,
-          phase:
-            msg.phase === 'playing' ? 'playing' : msg.phase === 'gameover' ? 'gameover' : 'lobby',
+          phase: nextPhase,
           // En gameover el server adjunta el summary final. Lo guardamos en
           // el snapshot para que NetArenaScene lo lea y submitee el run.
           gameoverSummary:
             msg.phase === 'gameover' && msg.summary && typeof msg.seed === 'number'
               ? { seed: msg.seed, ...msg.summary }
-              : this.snap.gameoverSummary,
+              : leavingGameover
+                ? null
+                : this.snap.gameoverSummary,
+          restartVotes: leavingGameover ? null : this.snap.restartVotes,
+          // Si volvimos a 'lobby' (restart), el state previo ya no aplica.
+          state: nextPhase === 'lobby' ? null : this.snap.state,
         })
         return
+      }
       case 'state':
         this.update({ ...this.snap, state: msg })
         return
@@ -496,6 +550,9 @@ class NetClient {
       case 'wave-buff:end':
         this.applyBuffEnd(msg)
         return
+      case 'restart:votes':
+        this.applyRestartVotes(msg)
+        return
     }
   }
 
@@ -523,6 +580,13 @@ class NetClient {
     this.update({ ...this.snap, waveBuffOffer: null, waveBuffVotes: [] })
   }
 
+  private applyRestartVotes(msg: RestartVotesMsg): void {
+    this.update({
+      ...this.snap,
+      restartVotes: { votes: msg.votes, needed: msg.needed },
+    })
+  }
+
   private applyLobby(msg: LobbyMsg): void {
     // Server sends per-receiver lobby msgs with our scoped sessionId/slot.
     this.update({
@@ -548,6 +612,30 @@ class NetClient {
   private update(next: RoomSnapshot): void {
     this.snap = next
     for (const fn of this.listeners) fn(next)
+  }
+
+  /** Mobile Safari + tabs en background matan WS al ratito. Cuando el user
+   *  vuelve a la pestaña/app, intentamos reconnect si tenemos sessionId.
+   *  Idempotente: lo instalamos una sola vez por pageload. */
+  private installVisibilityHook(): void {
+    if (this.visibilityHookInstalled) return
+    if (typeof document === 'undefined') return
+    this.visibilityHookInstalled = true
+    const reconnectIfStale = () => {
+      if (document.visibilityState !== 'visible') return
+      if (this.rejoining) return
+      const wsClosed = !this.ws || this.ws.readyState === WebSocket.CLOSED
+      if (!wsClosed) return
+      const { phase, code, sessionId } = this.snap
+      if ((phase === 'lobby' || phase === 'playing') && code && sessionId) {
+        this.tryRejoin(code, sessionId)
+      }
+    }
+    document.addEventListener('visibilitychange', reconnectIfStale)
+    // Algunos browsers (mobile Safari) disparan 'pageshow' al volver del bfcache.
+    window.addEventListener('pageshow', reconnectIfStale)
+    // Volvió la red → reintento inmediato.
+    window.addEventListener('online', reconnectIfStale)
   }
 }
 

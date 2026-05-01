@@ -40,6 +40,12 @@ export const LobbyOverlay: Component<LobbyOverlayProps> = (props) => {
       props.bus.emit('ui:menu:start-netarena', {})
     }
     if (s.error) setError(s.error.msg)
+    // Restart desde gameover: el server puso la sala en 'lobby' pero el
+    // overlay arranca en mode='menu'. Saltá al rol correcto según el slot
+    // así el roster + botón ESTOY LISTO aparecen automáticamente.
+    if (s.phase === 'lobby' && s.code && mode() === 'menu' && props.open()) {
+      setMode(s.slot === 0 ? 'host' : 'join')
+    }
   })
 
   const playerName = (): string => {
