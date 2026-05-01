@@ -159,6 +159,13 @@ export interface NetPlayer {
   /** What the client wants to look like — set at handshake, retransmitted by
    *  the server every tick. Optional so old clients still render (default). */
   cosmetics?: NetCosmetics
+  /** Left4Dead-style downed state: the player is incapacitated, can't take
+   *  input, and stays at hp=0 until revived by the peer. */
+  downed?: boolean
+  /** When `downed`, fraction (0..1) of the revival counter — 1.0 means the
+   *  peer has matado the configured number of enemies and the next tick
+   *  will revive this player at 50% HP. */
+  revivalProgress?: number
 }
 
 export interface NetEnemy {

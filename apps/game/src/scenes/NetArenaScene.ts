@@ -3,6 +3,7 @@ import type { NetCosmetics, NetEnemy, NetPlayer, StateMsg } from '@stick/shared'
 import { ARENA, CAM_ZOOM } from '@stick/sim'
 
 import { netClient, type RoomSnapshot } from '../net/NetClient'
+import { type ArenaProps, ArenaPropsRenderer } from '../render/ArenaPropsRenderer'
 import { ParticleRenderer } from '../render/ParticleRenderer'
 import { StickmanRenderer, type StickmanRenderState } from '../render/StickmanRenderer'
 import { ParticleSystem } from '../systems/ParticleSystem'
@@ -53,6 +54,8 @@ export class NetArenaScene extends BaseScene {
   private enemyGraphics = new Map<string, Phaser.GameObjects.Graphics>()
   private peerGraphics = new Map<string, Phaser.GameObjects.Graphics>()
   private particleGraphics!: Phaser.GameObjects.Graphics
+  private arenaPropsGraphics!: Phaser.GameObjects.Graphics
+  private arenaProps!: ArenaProps
 
   private playerOverlays = new Map<string, ActorOverlay>()
   private enemyOverlays = new Map<string, ActorOverlay>()
@@ -90,6 +93,16 @@ export class NetArenaScene extends BaseScene {
 
     this.stickman = new StickmanRenderer()
     this.particles = new ParticleSystem({ rng: this.rng })
+
+    // Industrial floor + grid + lamps + fans + dust — same as SP. Drawn first
+    // so everything else (actors, fx, HUD overlays) sits on top.
+    this.arenaProps = ArenaPropsRenderer.generate({
+      width: ARENA.width,
+      height: ARENA.height,
+    })
+    this.arenaPropsGraphics = this.add.graphics()
+    this.arenaPropsGraphics.setDepth(-100)
+
     this.playerGraphics = this.add.graphics()
     this.playerGraphics.setDepth(1000)
     this.particleGraphics = this.add.graphics()
@@ -123,28 +136,43 @@ export class NetArenaScene extends BaseScene {
 
   override update(_time: number, deltaMs: number): void {
     const dt = Math.max(0, Math.min(0.1, deltaMs / 1000))
-    const moveVec = this.services.input.getMoveVector()
 
-    // Forward input to the server. NetClient coalesces dups so emitting
-    // every frame is fine.
-    const edges =
-      this.pendingAttack || this.pendingShoot || this.pendingSkill !== null
-        ? {
-            ...(this.pendingAttack ? { attack: true } : {}),
-            ...(this.pendingShoot ? { shoot: true } : {}),
-            ...(this.pendingSkill !== null ? { skill: this.pendingSkill } : {}),
-          }
-        : undefined
-    netClient.sendInput(moveVec.x, moveVec.y, edges)
-    this.pendingAttack = false
-    this.pendingShoot = false
-    this.pendingSkill = null
+    // If we're downed, the server ignores our input anyway — but suppressing
+    // it locally means the joystick widget stops feeding the WS too, and the
+    // attack/skill buffer doesn't queue up phantom presses for the revival.
+    const meSnap = this.snap.state?.players.find((p) => p.sessionId === this.snap.sessionId)
+    const selfDowned = meSnap?.downed === true
+    if (selfDowned) {
+      this.pendingAttack = false
+      this.pendingShoot = false
+      this.pendingSkill = null
+      netClient.sendInput(0, 0)
+    } else {
+      const moveVec = this.services.input.getMoveVector()
+      const edges =
+        this.pendingAttack || this.pendingShoot || this.pendingSkill !== null
+          ? {
+              ...(this.pendingAttack ? { attack: true } : {}),
+              ...(this.pendingShoot ? { shoot: true } : {}),
+              ...(this.pendingSkill !== null ? { skill: this.pendingSkill } : {}),
+            }
+          : undefined
+      netClient.sendInput(moveVec.x, moveVec.y, edges)
+      this.pendingAttack = false
+      this.pendingShoot = false
+      this.pendingSkill = null
+    }
 
     // Render from the latest server snapshot.
     const state = this.snap.state
     if (!state) return
 
     this.diffAndEmit(state)
+
+    // Floor + ambient (fans, lamps, dust). Cheap; redraw every frame is fine.
+    ArenaPropsRenderer.update(this.arenaProps, dt, (lo, hi) => this.rng.float(lo, hi))
+    this.arenaPropsGraphics.clear()
+    ArenaPropsRenderer.drawFloor(this.arenaPropsGraphics, this.arenaProps)
 
     this.renderPlayers(state.players)
     this.renderEnemies(state.enemies)
@@ -271,6 +299,16 @@ export class NetArenaScene extends BaseScene {
         peer.setPosition(p.x, p.y)
         g = peer
       }
+      // Downed: rotate the stick 90° so it reads as "lying down" + drop the
+      // alpha to grey it out a bit. Server keeps hp pinned at 0; the renderer
+      // has no idea which side is "down" so we just rotate the Graphics.
+      if (p.downed) {
+        g.setRotation(Math.PI / 2)
+        g.setAlpha(0.55)
+      } else {
+        g.setRotation(0)
+        g.setAlpha(1)
+      }
       this.stickman.draw(g, this.toRenderable(p))
       this.updatePlayerOverlay(p, isSelf)
     }
@@ -326,13 +364,34 @@ export class NetArenaScene extends BaseScene {
       ov = { hpBg, hpFill, name, lastHp: p.hp }
       this.playerOverlays.set(p.sessionId, ov)
     }
-    const hpFrac = Math.max(0, Math.min(1, p.maxHp > 0 ? p.hp / p.maxHp : 0))
     const above = p.y - 36
-    ov.hpBg.setPosition(p.x, above)
-    ov.hpFill.setPosition(p.x - 17, above)
-    ov.hpFill.width = 34 * hpFrac
-    ov.hpFill.fillColor = hpFrac > 0.6 ? 0x7fff7f : hpFrac > 0.3 ? 0xffd54a : 0xff6060
-    if (ov.name) ov.name.setPosition(p.x, above - 4)
+    if (p.downed) {
+      // Replace HP bar with a revival progress bar (yellow → green as peer
+      // racks up kills). Bar shows fill = revivalProgress (0..1).
+      const prog = Math.max(0, Math.min(1, p.revivalProgress ?? 0))
+      ov.hpBg.setPosition(p.x, above)
+      ov.hpBg.fillColor = 0x442211
+      ov.hpFill.setPosition(p.x - 17, above)
+      ov.hpFill.width = 34 * prog
+      ov.hpFill.fillColor = prog > 0.6 ? 0x7fff7f : 0xffd54a
+      if (ov.name) {
+        ov.name.setPosition(p.x, above - 4)
+        ov.name.setText(isSelf ? `${p.name} (vos) — DOWN` : `${p.name} — DOWN`)
+        ov.name.setColor('#ff6060')
+      }
+    } else {
+      const hpFrac = Math.max(0, Math.min(1, p.maxHp > 0 ? p.hp / p.maxHp : 0))
+      ov.hpBg.setPosition(p.x, above)
+      ov.hpBg.fillColor = 0x2a2a2a
+      ov.hpFill.setPosition(p.x - 17, above)
+      ov.hpFill.width = 34 * hpFrac
+      ov.hpFill.fillColor = hpFrac > 0.6 ? 0x7fff7f : hpFrac > 0.3 ? 0xffd54a : 0xff6060
+      if (ov.name) {
+        ov.name.setPosition(p.x, above - 4)
+        ov.name.setText(isSelf ? `${p.name} (vos)` : p.name)
+        ov.name.setColor(isSelf ? '#ffd54a' : '#7fc97f')
+      }
+    }
     ov.lastHp = p.hp
   }
 

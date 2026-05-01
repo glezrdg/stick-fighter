@@ -49,6 +49,15 @@ const DEFAULT_COSMETICS: NetCosmetics = {
   aura: 'yellow',
 }
 
+/** Left4Dead-style revival: peer must kill this many enemies to bring you back. */
+const REVIVAL_KILLS_REQUIRED = 5
+/** Max time spent downed before the run ends if no revive happens. */
+const DOWNED_TIMEOUT_MS = 30_000
+/** HP fraction the revived player gets restored to. */
+const REVIVAL_HP_FRACTION = 0.5
+/** Invulnerability seconds granted after revive so you don't insta-die again. */
+const REVIVAL_IFRAMES_SEC = 2.0
+
 export interface RoomClient {
   ws: WebSocket
   sessionId: string
@@ -68,6 +77,13 @@ export interface RoomClient {
   combat: CombatSystem
   /** Last echo of the server's ping nonce (for RTT, future use). */
   lastPongAt: number
+  /** Downed (Left4Dead-style) state. While true, sim isn't ticked — the
+   *  player lies on the floor at hp=0 until peer kills enough enemies. */
+  downed: boolean
+  /** Timestamp (Date.now()) when this player went down; null otherwise. */
+  downedAt: number | null
+  /** Counter of enemies the peer has killed since this player went down. */
+  killsByPeerSinceDown: number
 }
 
 const SIM_TICK_HZ = 30
@@ -149,6 +165,9 @@ export class StickFightRoom {
       sim,
       combat,
       lastPongAt: Date.now(),
+      downed: false,
+      downedAt: null,
+      killsByPeerSinceDown: 0,
     }
     this.clients.set(sessionId, client)
 
@@ -241,6 +260,19 @@ export class StickFightRoom {
       this.gold = gold
     })
 
+    // Each enemy kill counts toward reviving any downed teammates.
+    // We don't know who landed the killing blow (bus event has no attacker),
+    // so any kill counts — that's fine for co-op.
+    this.bus.on('enemy:death', () => {
+      for (const c of this.clients.values()) {
+        if (!c.downed) continue
+        c.killsByPeerSinceDown++
+        if (c.killsByPeerSinceDown >= REVIVAL_KILLS_REQUIRED) {
+          this.reviveClient(c)
+        }
+      }
+    })
+
     // Re-bind each client's CombatSystem now that bus/rng are real (the
     // closures in the constructors already point to `this.waves` etc.).
     // Nothing to do — the closures resolve lazily.
@@ -264,7 +296,18 @@ export class StickFightRoom {
     if (this.phase !== 'playing' || !this.waves || !this.enemies || !this.projectiles) return
 
     // Per-player: input + movement + combat tick + edge actions.
+    // Downed players are skipped — they lie on the floor at hp=0 waiting
+    // for a peer to revive them.
     for (const c of this.clients.values()) {
+      if (c.downed) {
+        // Pin the sim so it doesn't drift (no input, no AI consequences).
+        c.sim.vx = 0
+        c.sim.vy = 0
+        c.input.attack = false
+        c.input.shoot = false
+        c.input.skill = null
+        continue
+      }
       updateMovement(c.sim, { x: c.input.dx, y: c.input.dy }, dt)
       c.combat.update(c.sim, dt)
       if (c.input.attack) {
@@ -277,22 +320,89 @@ export class StickFightRoom {
       }
       // Skills wiring lands when the SkillSystem is per-room (TODO post-smoke).
       c.input.skill = null
+
+      // Did this player just go down?
+      if (c.sim.hp <= 0) {
+        this.markDowned(c)
+      }
     }
 
-    // Shared world tick. EnemySystem currently targets one player; we feed
-    // the first one and re-target inside its behaviors. Per-enemy nearest-
-    // target is a TODO once basic 2P sync is proven.
-    const firstClient = this.clients.values().next().value
-    if (firstClient) {
+    // Shared world tick. EnemySystem needs an "alive player" target — pick
+    // the first non-downed client. If both are downed, the watchdog below
+    // will flip phase=gameover anyway, but the sim still advances harmlessly.
+    const target = this.firstAlive() ?? this.clients.values().next().value
+    if (target) {
       const enemiesList = this.waves.getEnemies()
-      this.enemies.update(enemiesList, firstClient.sim, dt)
-      this.projectiles.update(firstClient.sim, dt)
+      this.enemies.update(enemiesList, target.sim, dt)
+      this.projectiles.update(target.sim, dt)
       this.waves.update(dt)
       this.waves.reapDead()
     }
 
+    // Watchdog: end the run if everyone is downed, or if the downed peer's
+    // timer expired with no rescue. Only one player downed → the run keeps
+    // going until either the revival happens or the survivor also falls.
+    this.checkGameOver()
+
     this.tick++
     this.broadcast(this.stateMsg())
+  }
+
+  /** Returns the first non-downed client (used by EnemySystem for AI target). */
+  private firstAlive(): RoomClient | undefined {
+    for (const c of this.clients.values()) if (!c.downed) return c
+    return undefined
+  }
+
+  /** Transition a client from alive → downed: hp=0, sim frozen, peer's
+   *  revival counter reset, broadcast handled implicitly by next tick. */
+  private markDowned(c: RoomClient): void {
+    c.downed = true
+    c.downedAt = Date.now()
+    c.killsByPeerSinceDown = 0
+    c.sim.hp = 0
+    c.sim.vx = 0
+    c.sim.vy = 0
+    c.sim.iframes = 0
+    c.sim.attackTimer = 0
+    c.sim.attackKind = null
+    console.info(`[stick_fight] ${this.code}: ${c.sessionId} (${c.name}) downed`)
+  }
+
+  /** Revive a downed client at REVIVAL_HP_FRACTION of maxHp + iframes grace. */
+  private reviveClient(c: RoomClient): void {
+    c.downed = false
+    c.downedAt = null
+    c.killsByPeerSinceDown = 0
+    c.sim.hp = Math.max(1, Math.floor(c.sim.maxHp * REVIVAL_HP_FRACTION))
+    c.sim.iframes = REVIVAL_IFRAMES_SEC
+    console.info(`[stick_fight] ${this.code}: ${c.sessionId} (${c.name}) revived`)
+  }
+
+  /** End the run if (a) everyone is downed, or (b) the downed timer expired. */
+  private checkGameOver(): void {
+    if (this.clients.size === 0) return
+    const all = Array.from(this.clients.values())
+    const alive = all.filter((c) => !c.downed)
+    if (alive.length === 0) {
+      this.endRun('all-downed')
+      return
+    }
+    // Single downed: did its rescue clock expire?
+    const now = Date.now()
+    for (const c of all) {
+      if (c.downed && c.downedAt && now - c.downedAt > DOWNED_TIMEOUT_MS) {
+        this.endRun('rescue-timeout')
+        return
+      }
+    }
+  }
+
+  private endRun(reason: 'all-downed' | 'rescue-timeout'): void {
+    if (this.phase !== 'playing') return
+    this.phase = 'gameover'
+    console.info(`[stick_fight] ${this.code}: gameover (${reason})`)
+    this.broadcast({ t: 'phase', phase: 'gameover', seed: null } satisfies PhaseMsg)
   }
 
   private removeClient(sessionId: string, reason: 'consented' | 'timeout' | 'kicked'): void {
@@ -367,6 +477,10 @@ export class StickFightRoom {
         hp: Math.max(0, Math.floor(c.sim.hp)),
         maxHp: c.sim.maxHp,
         cosmetics: c.cosmetics,
+        downed: c.downed,
+        revivalProgress: c.downed
+          ? Math.min(1, c.killsByPeerSinceDown / REVIVAL_KILLS_REQUIRED)
+          : 0,
       })
     }
 
