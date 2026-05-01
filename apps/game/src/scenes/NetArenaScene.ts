@@ -1056,8 +1056,14 @@ export class NetArenaScene extends BaseScene {
       ov.hpFill.destroy()
     }
     this.enemyOverlays.clear()
-    // Drop the connection — entering the menu means leaving the room.
-    void netClient.leave()
+    // Drop la conexión SOLO si la sala ya terminó (error / idle). En gameover
+    // o lobby la mantenemos viva para que el flow de "Play Again" pueda usar
+    // el room sin recrearlo: GameOverOverlay lee snapshot.code/sessionId para
+    // decidir si está en multi y mostrar los botones REINTENTAR (consenso).
+    const phase = netClient.getSnapshot().phase
+    if (phase !== 'gameover' && phase !== 'lobby' && phase !== 'playing') {
+      void netClient.leave()
+    }
     this.prevState = null
     this.lastWave = -1
     this.lastGold = -1
