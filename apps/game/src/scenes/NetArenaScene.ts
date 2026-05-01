@@ -96,18 +96,19 @@ export class NetArenaScene extends BaseScene {
   private snap: RoomSnapshot = netClient.getSnapshot()
   private prevState: StateMsg | null = null
 
-  /** Modo del render — controla cómo decidimos cuándo pintar. El server
-   *  tickea 30Hz pero Phaser corre `update()` a 60fps. Pintar el mismo state
-   *  dos veces seguidas en GPUs Adreno se ve como stutter (el ojo detecta
-   *  repetición de frame). Modos:
-   *    - 'state-driven' (default): solo renderizamos cuando llega un state
-   *      nuevo. Cero frames duplicados, cero delay agregado. La opción
-   *      correcta hasta que tengamos interpolación cliente-side (Fase 4).
-   *    - 'cap-fps': cap por tiempo (más simple pero suma 1 frame de latency).
-   *    - 'unlocked': render cada frame Phaser, comportamiento legacy.
+  /** Modo del render — debugging opt-in via query string. **Default 'unlocked'**
+   *  porque cualquier cap o state-driven cuts también frenan las animaciones
+   *  locales (partículas, props industriales, camera shake) que tickean per-
+   *  frame, y eso EMPEORA la sensación general aunque los actores se vean
+   *  igual. La solución real al stutter Adreno es interpolación cliente-side
+   *  (Fase 4 del plan netcode) — render a 60fps lerpeando entre snapshots.
    *
-   *  Override: `?render=cap|unlocked` en query string. Default 'state-driven'. */
-  private renderMode: 'state-driven' | 'cap-fps' | 'unlocked' = 'state-driven'
+   *  Modos disponibles via `?render=...`:
+   *    - 'unlocked' (default): render cada frame Phaser, comportamiento legacy.
+   *    - 'state-driven': skip si state.tick no cambió. Reduce CPU pero frena
+   *      las animaciones locales — usar SOLO para tests de diagnóstico.
+   *    - 'cap-fps': cap temporal con `?fps=N`. Idem disclaimer. */
+  private renderMode: 'state-driven' | 'cap-fps' | 'unlocked' = 'unlocked'
   private renderFpsCap = 30
   private lastRenderTime = 0
   private lastRenderedTick = -1
