@@ -371,10 +371,11 @@ export interface SkillCastMsg {
   facingY: number
 }
 
-/** Wave terminada → server pausa el tick global, ofrece 3 buffs. Ambos clientes
- *  votan vía `WaveBuffVoteReq`. Si coinciden, ese gana; si difieren, server
- *  elige uno al azar entre los dos votos; si nadie vota en 30s, server elige
- *  random de la oferta. Resolución llega como `WaveBuffResolvedMsg`. */
+/** Wave terminada → server pausa el tick global, ofrece 3 buffs. Cada cliente
+ *  elige el suyo independientemente vía `WaveBuffVoteReq`; el server aplica
+ *  ese buff SOLO al picker (no compartido) y emite un `WaveBuffResolvedMsg`
+ *  por cada pick. Cuando todos los activos picaron (o expira el timeout y
+ *  server autopickea), llega `WaveBuffEndMsg` y se reanuda la siguiente wave. */
 export interface WaveBuffOfferMsg {
   t: 'wave-buff:offer'
   wave: number
@@ -390,15 +391,26 @@ export interface WaveBuffVotesMsg {
   votes: ReadonlyArray<{ sessionId: string; buffId: string | null }>
 }
 
-/** Server resolvió la votación, aplicó el buff a ambos players, y va a reanudar.
- *  El cliente esconde las cartas y muestra (opcional) un toast. */
+/** Server aplicó un buff a UN player específico (cada quien elige el suyo).
+ *  En multi cada player recibe SU bendición, no compartida con el peer.
+ *  El server emite un resolved por cada pick; cuando todos los activos
+ *  picaron, se manda un `WaveBuffEndMsg` que cierra la fase en cliente. */
 export interface WaveBuffResolvedMsg {
   t: 'wave-buff:resolved'
+  /** A quién se le aplica este buff. */
+  sessionId: string
   wave: number
   buffId: string
-  /** 'agreement' = ambos votaron lo mismo. 'random-from-votes' = votos
-   *  divergentes, server picó uno al azar. 'autopick' = nadie votó a tiempo. */
-  reason: 'agreement' | 'random-from-votes' | 'autopick'
+  /** 'picked' = jugador eligió manualmente. 'autopick' = timeout, server randomizó. */
+  reason: 'picked' | 'autopick'
+}
+
+/** Server cerró la fase de wave-buff (todos picaron o llegó el timeout). El
+ *  cliente debe limpiar el overlay y volver a estado `playing`. Un solo
+ *  mensaje por wave, después de N `WaveBuffResolvedMsg` (uno por player). */
+export interface WaveBuffEndMsg {
+  t: 'wave-buff:end'
+  wave: number
 }
 
 export type ServerMsg =
@@ -412,6 +424,7 @@ export type ServerMsg =
   | WaveBuffOfferMsg
   | WaveBuffVotesMsg
   | WaveBuffResolvedMsg
+  | WaveBuffEndMsg
 
 // ============================================================================
 // Helpers

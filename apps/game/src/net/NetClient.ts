@@ -24,6 +24,7 @@ import {
   type NetLoadout,
   type ServerMsg,
   type StateMsg,
+  type WaveBuffEndMsg,
   type WaveBuffOfferMsg,
   type WaveBuffResolvedMsg,
   type WaveBuffVotesMsg,
@@ -492,6 +493,9 @@ class NetClient {
       case 'wave-buff:resolved':
         this.applyBuffResolved(msg)
         return
+      case 'wave-buff:end':
+        this.applyBuffEnd(msg)
+        return
     }
   }
 
@@ -508,9 +512,15 @@ class NetClient {
   }
 
   private applyBuffResolved(msg: WaveBuffResolvedMsg): void {
-    // Limpiamos el offer para que el overlay desaparezca.
-    this.update({ ...this.snap, waveBuffOffer: null, waveBuffVotes: [] })
+    // En multi llega un resolved POR PLAYER (cada quien recibe su propia
+    // bendición). NO limpiamos `waveBuffOffer` acá — eso pasa con
+    // `wave-buff:end` cuando el server cierra la fase. Mientras tanto el
+    // UI muestra "✓ TU VOTO REGISTRADO — ESPERANDO AL OTRO" si solo uno picó.
     for (const fn of this.resolvedListeners) fn(msg)
+  }
+
+  private applyBuffEnd(_msg: WaveBuffEndMsg): void {
+    this.update({ ...this.snap, waveBuffOffer: null, waveBuffVotes: [] })
   }
 
   private applyLobby(msg: LobbyMsg): void {

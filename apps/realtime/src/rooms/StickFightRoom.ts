@@ -11,6 +11,7 @@ import {
   type PhaseMsg,
   type ServerMsg,
   type StateMsg,
+  type WaveBuffEndMsg,
   type WaveBuffOfferMsg,
   type WaveBuffResolvedMsg,
   type WaveBuffVotesMsg,
@@ -507,7 +508,7 @@ export class StickFightRoom {
     // timeout (autopick) y seguimos broadcasteando state para que el HUD
     // de cada cliente refleje lo último (HP, gold, etc.).
     if (this.pendingBuffPhase) {
-      if (now >= this.pendingBuffPhase.expiresAt) this.resolveWaveBuff('autopick')
+      if (now >= this.pendingBuffPhase.expiresAt) this.autopickRemainingAndClose()
       // Pausar el rescue clock: el time-to-revive no debe correr mientras los
       // jugadores están votando y no pueden matar enemies.
       for (const c of this.clients.values()) {
@@ -803,62 +804,83 @@ export class StickFightRoom {
   private handleBuffVote(client: RoomClient, buffId: string): void {
     const phase = this.pendingBuffPhase
     if (!phase) return
-    if (!phase.buffIds.includes(buffId)) return // voto inválido (anti-tampering)
+    if (!phase.buffIds.includes(buffId)) return // pick inválido (anti-tampering)
+    if (phase.votes.has(client.sessionId)) return // ya picó — no permitir cambio
     phase.votes.set(client.sessionId, buffId)
-    this.broadcast(this.votesMsg())
-    // Todos los clientes vivos en sala votaron → resolver inmediato.
-    if (phase.votes.size >= this.clients.size) {
-      this.resolveWaveBuff('votes-complete')
-    }
-  }
 
-  /** Decide qué buff gana, lo aplica a TODOS los players (co-op shared
-   *  progression), broadcastea, y reanuda con la wave siguiente. */
-  private resolveWaveBuff(trigger: 'votes-complete' | 'autopick'): void {
-    const phase = this.pendingBuffPhase
-    if (!phase || !this.rng || !this.waves) return
-
-    let winnerId: string
-    let reason: WaveBuffResolvedMsg['reason']
-    const distinctVotes = Array.from(new Set(phase.votes.values()))
-
-    if (trigger === 'autopick' && distinctVotes.length === 0) {
-      // Nadie votó a tiempo → random de la oferta.
-      const idx = Math.floor(this.rng.next() * phase.buffIds.length)
-      const fallback = phase.buffIds[idx] ?? phase.buffIds[0]
-      if (!fallback) return
-      winnerId = fallback
-      reason = 'autopick'
-    } else if (distinctVotes.length === 1) {
-      // Todos votaron lo mismo (o solo uno votó y el otro timeouteó).
-      winnerId = distinctVotes[0] ?? phase.buffIds[0] ?? ''
-      if (!winnerId) return
-      reason = 'agreement'
-    } else {
-      // Votos divergentes → uno al azar entre los votados.
-      const idx = Math.floor(this.rng.next() * distinctVotes.length)
-      const pick = distinctVotes[idx] ?? distinctVotes[0]
-      if (!pick) return
-      winnerId = pick
-      reason = 'random-from-votes'
-    }
-
-    // Aplicar a TODOS los clientes (incluso al downed — al revivir le sirve).
-    for (const c of this.clients.values()) {
-      this.applyBuffToClient(c, winnerId)
-    }
-
+    // Aplicar SOLO a este cliente — cada quien recibe su propia bendición,
+    // sin compartir con el peer. Esta es la diferencia clave vs el flow viejo
+    // que mergeaba ambos votos en un único buff aplicado a los dos.
+    this.applyBuffToClient(client, buffId)
     this.broadcast({
       t: 'wave-buff:resolved',
+      sessionId: client.sessionId,
       wave: phase.wave,
-      buffId: winnerId,
-      reason,
+      buffId,
+      reason: 'picked',
     } satisfies WaveBuffResolvedMsg)
-
-    this.pendingBuffPhase = null
     console.info(
-      `[stick_fight] ${this.code}: wave ${phase.wave} buff resolved → ${winnerId} (${reason})`,
+      `[stick_fight] ${this.code}: ${client.sessionId} (${client.name}) picked → ${buffId}`,
     )
+    this.broadcast(this.votesMsg())
+
+    // Todos los clientes activos picaron → cerrar fase y reanudar.
+    if (this.allActivePicked()) this.closeBuffPhase()
+  }
+
+  /** Cuántos clientes "activos" deben picar antes de cerrar la fase. Excluye
+   *  zombies con `ws=null` (en grace) — sus picks vendrán por autopick si
+   *  nunca reconectan. Incluye downed (al revivir el buff sigue vigente). */
+  private activeClientsCount(): number {
+    let n = 0
+    for (const c of this.clients.values()) if (c.ws) n++
+    return n
+  }
+
+  private allActivePicked(): boolean {
+    const phase = this.pendingBuffPhase
+    if (!phase) return false
+    let needed = 0
+    for (const c of this.clients.values()) {
+      if (!c.ws) continue
+      if (!phase.votes.has(c.sessionId)) return false
+      needed++
+    }
+    return needed > 0
+  }
+
+  /** Timeout llegó: cualquiera que no picó recibe random de la oferta. Per-cliente. */
+  private autopickRemainingAndClose(): void {
+    const phase = this.pendingBuffPhase
+    if (!phase || !this.rng) return
+    for (const c of this.clients.values()) {
+      if (!c.ws) continue
+      if (phase.votes.has(c.sessionId)) continue
+      const idx = Math.floor(this.rng.next() * phase.buffIds.length)
+      const pick = phase.buffIds[idx] ?? phase.buffIds[0]
+      if (!pick) continue
+      phase.votes.set(c.sessionId, pick)
+      this.applyBuffToClient(c, pick)
+      this.broadcast({
+        t: 'wave-buff:resolved',
+        sessionId: c.sessionId,
+        wave: phase.wave,
+        buffId: pick,
+        reason: 'autopick',
+      } satisfies WaveBuffResolvedMsg)
+      console.info(`[stick_fight] ${this.code}: ${c.sessionId} (${c.name}) autopicked → ${pick}`)
+    }
+    this.broadcast(this.votesMsg())
+    this.closeBuffPhase()
+  }
+
+  /** Cierra la fase: limpia el offer, reanuda el sim, arranca la siguiente wave. */
+  private closeBuffPhase(): void {
+    const phase = this.pendingBuffPhase
+    if (!phase || !this.waves) return
+    this.pendingBuffPhase = null
+    this.broadcast({ t: 'wave-buff:end', wave: phase.wave } satisfies WaveBuffEndMsg)
+    console.info(`[stick_fight] ${this.code}: wave ${phase.wave} buff phase closed`)
     this.waves.startNextWave()
   }
 

@@ -73,6 +73,7 @@ export {
   type ServerMsg,
   type SkillCastMsg,
   type StateMsg,
+  type WaveBuffEndMsg,
   type WaveBuffOfferMsg,
   type WaveBuffResolvedMsg,
   type WaveBuffVoteReq,

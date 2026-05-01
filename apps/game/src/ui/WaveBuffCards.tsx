@@ -175,9 +175,11 @@ const BuffCard: Component<{
   alreadyVoted: boolean
 }> = (props) => {
   const [hover, setHover] = createSignal(false)
-  // Highlights: dorado si vos votaste, verde si peer votó, ambos si coinciden.
+  // Highlights: dorado si vos elegiste, verde si peer eligió, ambos si coinciden.
+  // En multi cada quien recibe SU bendición — si ambos eligen la misma carta,
+  // ambos la tienen aplicada; el verde es solo señal visual de "coincidieron".
   const borderColor = (): string => {
-    if (props.selfVoted && props.peerVoted) return '#7fff7f' // ambos = guaranteed winner
+    if (props.selfVoted && props.peerVoted) return '#7fff7f'
     if (props.selfVoted) return '#ffd54a'
     if (props.peerVoted) return '#7fc97f'
     return '#ff2a2a'
@@ -185,11 +187,13 @@ const BuffCard: Component<{
   return (
     <button
       type="button"
-      onClick={props.onPick}
+      onClick={props.alreadyVoted ? undefined : props.onPick}
+      disabled={props.alreadyVoted && !props.selfVoted}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
-      // No disable después del primer voto — el server acepta cambios y resuelve
-      // con el último valor recibido por sessionId. Permite "cambiar de opinión".
+      // En el nuevo flow individual el server aplica el buff al picker en el
+      // primer pick y rechaza cambios después — así que las cartas restantes
+      // se bloquean (cursor not-allowed) una vez elegida una.
       style={{
         position: 'relative',
         width: '180px',
@@ -201,7 +205,8 @@ const BuffCard: Component<{
         'flex-direction': 'column',
         'align-items': 'center',
         gap: '10px',
-        cursor: 'pointer',
+        cursor: props.alreadyVoted && !props.selfVoted ? 'not-allowed' : 'pointer',
+        opacity: props.alreadyVoted && !props.selfVoted ? 0.55 : 1,
         color: '#fff',
         'box-shadow':
           props.selfVoted || props.peerVoted
