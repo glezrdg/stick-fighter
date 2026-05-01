@@ -904,6 +904,13 @@ export class NetArenaScene extends BaseScene {
       attackDuration: p.attackDuration || 0.3,
       attackDirX: p.attackDirX,
       attackDirY: p.attackDirY,
+      // Bow draw/release: sin esto el StickmanRenderer no dibuja la pose
+      // del arco. El cliente veía la flecha volando pero al player en idle,
+      // sin bow visible.
+      ...(p.bowTimer !== undefined ? { bowTimer: p.bowTimer } : {}),
+      ...(p.bowDuration !== undefined ? { bowDuration: p.bowDuration } : {}),
+      ...(p.bowDirX !== undefined ? { bowDirX: p.bowDirX } : {}),
+      ...(p.bowDirY !== undefined ? { bowDirY: p.bowDirY } : {}),
       hurtFlash: 0,
       iframes: 0,
       color: visual.color,

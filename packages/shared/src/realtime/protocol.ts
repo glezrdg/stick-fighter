@@ -238,6 +238,13 @@ export interface NetPlayer {
   attackDuration: number
   attackDirX: number
   attackDirY: number
+  /** Bow draw/release timer (sim Player.bowTimer). Sin esto el StickmanRenderer
+   *  nunca dibuja la pose del arco — el cliente veía la flecha volando pero
+   *  al jugador en idle, sin arma. */
+  bowTimer?: number
+  bowDuration?: number
+  bowDirX?: number
+  bowDirY?: number
   hp: number
   maxHp: number
   /** What the client wants to look like — set at handshake, retransmitted by

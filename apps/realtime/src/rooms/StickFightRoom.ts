@@ -84,10 +84,17 @@ const REVIVAL_KILLS_REQUIRED = 3
 /** Max time spent downed before the run ends if no revive happens. Subimos
  *  de 30s a 60s para dar margen real para reanimar entre waves. */
 const DOWNED_TIMEOUT_MS = 60_000
-/** HP fraction the revived player gets restored to. */
-const REVIVAL_HP_FRACTION = 0.5
-/** Invulnerability seconds granted after revive so you don't insta-die again. */
-const REVIVAL_IFRAMES_SEC = 2.0
+/** HP fraction the revived player gets restored to. Subimos de 0.5 a 0.75
+ *  porque con 50% el revivido moría en 1-2 segundos rodeado de enemies. */
+const REVIVAL_HP_FRACTION = 0.75
+/** Invulnerability seconds granted after revive so you don't insta-die again.
+ *  Subimos de 2s a 4s — con 2s los enemies seguían pegando swings que ya
+ *  tenían animación en curso y conectaban apenas expiraban iframes. */
+const REVIVAL_IFRAMES_SEC = 4.0
+/** Empujamos enemies dentro de este radio cuando un player revive, así no
+ *  reaparece rodeado y muere instantáneo apenas expire el iframe. */
+const REVIVAL_PUSH_RADIUS = 100
+const REVIVAL_PUSH_FORCE = 8
 
 /** Wave-buff voting window: si nadie vota antes de esto, autopick random. */
 const WAVE_BUFF_TIMEOUT_MS = 30_000
@@ -287,6 +294,9 @@ export class StickFightRoom {
       skills,
     }
     this.clients.set(sessionId, client)
+    console.info(
+      `[stick_fight] ${this.code}: ${sessionId} (${name}) joined — weapon=${effectiveLoadout.weaponId}#${effectiveLoadout.weaponLevel} skills=[${effectiveLoadout.equippedSkills.join(',')}] owned=[${effectiveLoadout.ownedSkills.join(',')}] cosmeticsSkin=${client.cosmetics.skin}`,
+    )
 
     // Send lobby snapshot to the new client.
     this.send(client.ws, this.lobbyMsg())
@@ -693,14 +703,35 @@ export class StickFightRoom {
     console.info(`[stick_fight] ${this.code}: ${c.sessionId} (${c.name}) downed`)
   }
 
-  /** Revive a downed client at REVIVAL_HP_FRACTION of maxHp + iframes grace. */
+  /** Revive a downed client. Restaura HP + iframes y empuja enemies cercanos
+   *  hacia afuera para que no muera instantáneo apenas expire la gracia. */
   private reviveClient(c: RoomClient): void {
     c.downed = false
     c.downedAt = null
     c.killsByPeerSinceDown = 0
     c.sim.hp = Math.max(1, Math.floor(c.sim.maxHp * REVIVAL_HP_FRACTION))
     c.sim.iframes = REVIVAL_IFRAMES_SEC
-    console.info(`[stick_fight] ${this.code}: ${c.sessionId} (${c.name}) revived`)
+    // Push de enemies cercanos en dirección opuesta al player para
+    // descongestionar el spawn point.
+    if (this.waves) {
+      for (const e of this.waves.getEnemies()) {
+        const dx = e.x - c.sim.x
+        const dy = e.y - c.sim.y
+        const dist = Math.hypot(dx, dy)
+        if (dist > 0 && dist < REVIVAL_PUSH_RADIUS) {
+          const inv = 1 / dist
+          e.vx = dx * inv * REVIVAL_PUSH_FORCE
+          e.vy = dy * inv * REVIVAL_PUSH_FORCE
+          // Cancela cualquier swing en curso para que no nos peguen apenas
+          // expire iframes.
+          e.attackTimer = 0
+          e.attackKind = null
+        }
+      }
+    }
+    console.info(
+      `[stick_fight] ${this.code}: ${c.sessionId} (${c.name}) revived → hp=${c.sim.hp}/${c.sim.maxHp} iframes=${REVIVAL_IFRAMES_SEC}s`,
+    )
   }
 
   /** End the run if (a) everyone is downed, or (b) the downed timer expired. */
@@ -954,6 +985,10 @@ export class StickFightRoom {
         attackDuration: c.sim.attackDuration,
         attackDirX: c.sim.attackDirX,
         attackDirY: c.sim.attackDirY,
+        bowTimer: c.sim.bowTimer,
+        bowDuration: c.sim.bowDuration,
+        bowDirX: c.sim.bowDirX,
+        bowDirY: c.sim.bowDirY,
         hp: Math.max(0, Math.floor(c.sim.hp)),
         maxHp: c.sim.maxHp,
         cosmetics: c.cosmetics,
