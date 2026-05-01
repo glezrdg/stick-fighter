@@ -97,11 +97,17 @@ interface PendingBuffPhase {
 }
 
 export interface RoomClient {
-  ws: WebSocket
+  /** WebSocket activo. Null durante una ventana de gracia post-disconnect
+   *  (ver `disconnectedAt`). El sim sigue corriendo con input cero hasta
+   *  que el cliente reconecte vía RejoinReq o expire el grace. */
+  ws: WebSocket | null
   sessionId: string
   name: string
   slot: 0 | 1
   ready: boolean
+  /** Timestamp (ms) cuando se cerró el WS. Null mientras está conectado.
+   *  Si pasa más de RECONNECT_GRACE_MS, lo limpiamos como timeout real. */
+  disconnectedAt: number | null
   /** What this player wants to look like — sent at handshake, retransmitted
    *  every tick in NetPlayer. Server treats it as opaque cosmetic data; the
    *  renderer on each client maps these ids to colors/shapes via
@@ -141,7 +147,9 @@ export interface RoomClient {
 
 const SIM_TICK_HZ = 30
 const SIM_TICK_MS = 1000 / SIM_TICK_HZ
-const RECONNECT_GRACE_MS = 120_000
+/** Grace post-disconnect antes de matar el slot. Suficiente para mobile
+ *  Safari (~30s background timeout) más buffer para reabrir la app. */
+const RECONNECT_GRACE_MS = 60_000
 
 export class StickFightRoom {
   readonly code: string
@@ -171,6 +179,11 @@ export class StickFightRoom {
   private wave = 0
   private alive = 0
   private total = 0
+  /** Total kills del run. Co-op shared (incrementa por cualquier kill).
+   *  Usado para construir el RunReport submiteado al leaderboard al gameover. */
+  private kills = 0
+  /** Real timestamp (ms) cuando arrancó el run, para calcular durationSec. */
+  private runStartedAt = 0
 
   /** Wave-buff: si != null, el tick global no avanza combate; los clientes
    *  ven las 3 cartas y deben votar. Se limpia al resolver. */
@@ -237,6 +250,7 @@ export class StickFightRoom {
       name,
       slot,
       ready: false,
+      disconnectedAt: null,
       cosmetics: cosmetics ?? DEFAULT_COSMETICS,
       input: { dx: 0, dy: 0, attack: false, shoot: false, skill: null },
       sim,
@@ -300,11 +314,48 @@ export class StickFightRoom {
     }
   }
 
-  /** Ungraceful disconnect (network drop, browser tab closed, etc.). */
+  /**
+   * Disconnect (network drop, mobile background, tab closed). En lobby
+   * removemos directo (no hay nada que preservar). En playing o gameover
+   * empezamos una ventana de gracia: el slot queda zombie por
+   * `RECONNECT_GRACE_MS` antes de matarse. Mientras tanto el cliente
+   * puede reclamarlo con un `rejoin` que matchee sessionId.
+   */
   handleSocketClose(client: RoomClient): void {
-    // For simplicity we don't hold the slot — drop-in/drop-out grace can
-    // come later. F5R'-A scope: if you lose connection, you lose the slot.
-    this.removeClient(client.sessionId, 'timeout')
+    if (this.phase === 'lobby') {
+      this.removeClient(client.sessionId, 'timeout')
+      return
+    }
+    if (client.disconnectedAt !== null) return // ya marcado
+    client.ws = null
+    client.disconnectedAt = Date.now()
+    // Reset transient input para que el sim no quede pegado en una direction.
+    client.input.dx = 0
+    client.input.dy = 0
+    client.input.attack = false
+    client.input.shoot = false
+    client.input.skill = null
+    console.info(
+      `[stick_fight] ${this.code}: ${client.sessionId} (${client.name}) disconnected — ${RECONNECT_GRACE_MS / 1000}s grace`,
+    )
+  }
+
+  /**
+   * Reclama un slot zombie. Llamado por el server tras parsear un RejoinReq
+   * exitoso. Devuelve el client si OK, null si el sessionId no existe / ya
+   * está conectado / código no matchea.
+   */
+  rejoinClient(ws: WebSocket, sessionId: string): RoomClient | null {
+    const c = this.clients.get(sessionId)
+    if (!c) return null
+    if (c.ws !== null) return null // ya conectado, doble-rejoin no permitido
+    c.ws = ws
+    c.disconnectedAt = null
+    console.info(`[stick_fight] ${this.code}: ${sessionId} (${c.name}) rejoined`)
+    // El cliente que reconectó necesita re-sincronizar UI: su lobbyMsg con
+    // sessionId/slot scoped + el state actual (lo recibirá en el próximo tick).
+    this.send(c.ws, this.lobbyMsgFor(c))
+    return c
   }
 
   // -------------------------------------------------------------------- inner
@@ -320,6 +371,9 @@ export class StickFightRoom {
     this.phase = 'playing'
     this.tick = 0
     this.lastTickAt = Date.now()
+    this.runStartedAt = Date.now()
+    this.kills = 0
+    this.gold = 0
 
     this.bus = createEventBus()
     this.rng = createRng(this.seed)
@@ -358,6 +412,7 @@ export class StickFightRoom {
         }
       }
       if (!byPlayer) return
+      this.kills++
       // Look up the dead enemy in the wave system to read its content config.
       // The enemy aún está en la lista (CombatSystem emite antes de reapDead).
       const enemy = this.waves?.getEnemies().find((e) => e.id === enemyId)
@@ -395,6 +450,16 @@ export class StickFightRoom {
     if (dt <= 0 || dt > 1) {
       // Sanity: skip ticks with absurd dt (server hiccup, tab thaw).
       return
+    }
+
+    // Reap zombies: clientes con WS cerrado por más del grace window.
+    for (const c of Array.from(this.clients.values())) {
+      if (c.disconnectedAt !== null && now - c.disconnectedAt > RECONNECT_GRACE_MS) {
+        console.info(
+          `[stick_fight] ${this.code}: ${c.sessionId} (${c.name}) reconnect grace expired — kicking`,
+        )
+        this.removeClient(c.sessionId, 'timeout')
+      }
     }
 
     if (this.phase !== 'playing' || !this.waves || !this.enemies || !this.projectiles) return
@@ -612,8 +677,23 @@ export class StickFightRoom {
     this.phase = 'gameover'
     // Si había votación pendiente la cancelamos — el run terminó.
     this.pendingBuffPhase = null
-    console.info(`[stick_fight] ${this.code}: gameover (${reason})`)
-    this.broadcast({ t: 'phase', phase: 'gameover', seed: null } satisfies PhaseMsg)
+    const durationSec = (Date.now() - this.runStartedAt) / 1000
+    console.info(
+      `[stick_fight] ${this.code}: gameover (${reason}) wave=${this.wave} kills=${this.kills} gold=${this.gold} dur=${durationSec.toFixed(1)}s`,
+    )
+    // El seed se reenvía para que cada cliente lo incluya en su RunReport
+    // submiteado al api de leaderboard. El summary lleva los stats finales.
+    this.broadcast({
+      t: 'phase',
+      phase: 'gameover',
+      seed: this.seed,
+      summary: {
+        wave: this.wave,
+        kills: this.kills,
+        gold: this.gold,
+        durationSec,
+      },
+    } satisfies PhaseMsg)
   }
 
   // ----------------------------------------------------- wave-buff voting
@@ -759,7 +839,7 @@ export class StickFightRoom {
     if (!client) return
     this.clients.delete(sessionId)
     try {
-      client.ws.close()
+      client.ws?.close()
     } catch {
       // ignore — already closed
     }
@@ -901,7 +981,8 @@ export class StickFightRoom {
     }
   }
 
-  private send(ws: WebSocket, msg: ServerMsg): void {
+  private send(ws: WebSocket | null, msg: ServerMsg): void {
+    if (!ws) return // cliente en grace — no hay socket
     if (ws.readyState !== ws.OPEN) return
     try {
       ws.send(encodeMsg(msg))
@@ -940,7 +1021,7 @@ export class StickFightRoom {
   closeAll(): void {
     for (const c of this.clients.values()) {
       try {
-        c.ws.close(1001, 'server-shutdown')
+        c.ws?.close(1001, 'server-shutdown')
       } catch {
         // ignore
       }
@@ -972,6 +1053,3 @@ function computeStatsFor(rb: RunBuffs, loadout: NetLoadout): EffectiveStats {
     weaponLevel: loadout.weaponLevel,
   })
 }
-
-// Suppress unused warning until reconnect flow lands.
-void RECONNECT_GRACE_MS

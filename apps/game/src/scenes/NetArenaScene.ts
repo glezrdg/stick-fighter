@@ -3,6 +3,8 @@ import type { NetCosmetics, NetEnemy, NetObstacle, NetPlayer, StateMsg } from '@
 import { ARENA, CAM_ZOOM, type Obstacle } from '@stick/sim'
 
 import { netClient, type RoomSnapshot } from '../net/NetClient'
+import { ApiClient } from '../platform/api'
+import { RunQueue } from '../platform/runQueue'
 import { type ArenaProps, ArenaPropsRenderer } from '../render/ArenaPropsRenderer'
 import { DeathFxRenderer } from '../render/DeathFxRenderer'
 import { GoreRenderer } from '../render/GoreRenderer'
@@ -56,6 +58,8 @@ export class NetArenaScene extends BaseScene {
   static readonly KEY = 'NetArena'
 
   private playerGraphics!: Phaser.GameObjects.Graphics
+  /** Aura glow alrededor de cada player. Se dibuja debajo de los actores. */
+  private auraGraphics!: Phaser.GameObjects.Graphics
   private enemyGraphics = new Map<string, Phaser.GameObjects.Graphics>()
   private peerGraphics = new Map<string, Phaser.GameObjects.Graphics>()
   private particleGraphics!: Phaser.GameObjects.Graphics
@@ -135,6 +139,10 @@ export class NetArenaScene extends BaseScene {
     this.obstacleGraphics = this.add.graphics()
     this.obstacleGraphics.setDepth(800)
 
+    // Aura debajo de los actores. Layer dedicado para que no se mezcle con
+    // particles/HUD; misma idea que SP (`auraGraphics` en ArenaScene).
+    this.auraGraphics = this.add.graphics()
+    this.auraGraphics.setDepth(900)
     this.playerGraphics = this.add.graphics()
     this.playerGraphics.setDepth(1000)
     this.particleGraphics = this.add.graphics()
@@ -155,19 +163,38 @@ export class NetArenaScene extends BaseScene {
       this.bus.on('wave:buff:pick', ({ buffId }) => netClient.sendWaveBuffVote(buffId)),
     )
 
+    // Peer drop-out: server broadcasts peer-left → mostramos toast 4s y el
+    // run sigue (el server mantiene la sala viva con el sobreviviente).
+    this.busUnsubs.push(netClient.onPeerLeft(({ name }) => this.showPeerLeftToast(name)))
+
     this.netUnsub = netClient.subscribe((s) => {
       const prevOffer = this.snap.waveBuffOffer
+      const prevPhase = this.snap.phase
       this.snap = s
       // Server says it's over (or we got error/disconnected) → bail to menu.
       if (s.phase === 'gameover' || s.phase === 'error' || s.phase === 'idle') {
-        // Surface the run-end so HUD/menu chrome reacts.
-        if (s.phase === 'gameover') {
-          this.bus.emit('run:end', {
-            wave: this.lastWave,
-            kills: 0,
-            gold: this.lastGold,
-            reason: 'death',
-          })
+        // Solo procesamos el gameover una vez (transición prev→now).
+        if (s.phase === 'gameover' && prevPhase !== 'gameover') {
+          const sum = s.gameoverSummary
+          if (sum) {
+            this.bus.emit('run:end', {
+              wave: sum.wave,
+              kills: sum.kills,
+              gold: sum.gold,
+              reason: 'death',
+            })
+            this.persistMultiRun(sum).catch((err) =>
+              console.error('[net-arena] run submit failed:', err),
+            )
+          } else {
+            // Server no envió summary (cliente o server viejo) → fallback con stats locales.
+            this.bus.emit('run:end', {
+              wave: this.lastWave,
+              kills: 0,
+              gold: this.lastGold,
+              reason: 'death',
+            })
+          }
         }
         this.scene.start('MainMenu')
         return
@@ -470,10 +497,41 @@ export class NetArenaScene extends BaseScene {
     })
   }
 
+  /** Aura glow detrás de cada player. Activa cuando el player está
+   *  mid-attack (attackTimer>0) o downed-no, mismas tres discs concéntricas
+   *  que SP. El color sale de cosmetics.aura via `getAura`. */
+  private drawPlayerAura(p: NetPlayer): void {
+    if (p.downed) return
+    if (p.attackTimer <= 0) return
+    let color = 0xffd54a
+    try {
+      if (p.cosmetics?.aura) color = parseInt(getAura(p.cosmetics.aura).color.slice(1), 16)
+    } catch {
+      // unknown aura id → default dorado
+    }
+    const cx = p.x
+    const cy = p.y - 18
+    const baseR = 38
+    // Más intenso cerca del fin del swing — `progress` sube con cada hit.
+    const progress = p.attackDuration > 0 ? 1 - p.attackTimer / p.attackDuration : 0.5
+    const intensity = 0.6 + 0.6 * progress
+    const g = this.auraGraphics
+    g.fillStyle(color, 0.1 * intensity)
+    g.fillCircle(cx, cy, baseR * 1.2 * intensity)
+    g.fillStyle(color, 0.18 * intensity)
+    g.fillCircle(cx, cy, baseR * 0.9 * intensity)
+    g.fillStyle(color, 0.28 * intensity)
+    g.fillCircle(cx, cy, baseR * 0.55 * intensity)
+  }
+
   // ---------------------------------------------------------------- renderers
 
   private renderPlayers(players: ReadonlyArray<NetPlayer>): void {
+    // Re-pintamos las auras de cero cada frame; afectan a todos los players
+    // (uno o dos) según su attackTimer activo.
+    this.auraGraphics.clear()
     for (const p of players) {
+      this.drawPlayerAura(p)
       const isSelf = p.sessionId === this.snap.sessionId
       let g: Phaser.GameObjects.Graphics
       if (isSelf) {
@@ -689,6 +747,89 @@ export class NetArenaScene extends BaseScene {
     }
   }
 
+  /** Toast cuando el peer se desconecta. Pinta un texto centrado-superior
+   *  por 4s y luego desaparece. El run continúa solo (server mantiene la sala). */
+  private showPeerLeftToast(name: string): void {
+    const cam = this.cameras.main
+    const x = cam.scrollX + cam.width / (2 * cam.zoom)
+    const y = cam.scrollY + 40
+    const txt = this.add
+      .text(x, y, `${name} se desconectó — seguís solo`, {
+        fontFamily: "'Russo One', sans-serif",
+        fontSize: '14px',
+        color: '#ffd54a',
+        stroke: '#000',
+        strokeThickness: 3,
+        backgroundColor: 'rgba(0,0,0,0.6)',
+        padding: { x: 10, y: 6 },
+      })
+      .setOrigin(0.5, 0)
+      .setDepth(2000)
+      .setScrollFactor(0)
+    this.tweens.add({
+      targets: txt,
+      alpha: 0,
+      y: y - 20,
+      duration: 600,
+      delay: 3400,
+      onComplete: () => txt.destroy(),
+    })
+  }
+
+  /**
+   * Submit del run al `/runs` del leaderboard. El server-multi nos pasa el
+   * summary (wave/kills/gold/seed/dur). Cada cliente arma su RunReport con
+   * su loadout local y lo manda. Si el api está caído cae en `RunQueue`.
+   *
+   * También actualiza el save local: gold + bestWave + totalKills.
+   */
+  private async persistMultiRun(sum: {
+    seed: number
+    wave: number
+    kills: number
+    gold: number
+    durationSec: number
+  }): Promise<void> {
+    const save = this.services.save
+    save.gold += sum.gold
+    save.totalKills += sum.kills
+    if (sum.wave > save.bestWave) save.bestWave = sum.wave
+    await this.services.saveStore.save(save)
+
+    if (sum.wave < 1) return
+
+    const weaponId = save.cosmetics.sword.equipped
+    const report = {
+      seed: sum.seed,
+      wave: sum.wave,
+      kills: sum.kills,
+      gold: sum.gold,
+      durationSec: sum.durationSec,
+      weapon: weaponId,
+      buffs: {} as Record<string, number>,
+      reason: 'death' as const,
+      ...(save.playerName ? { playerName: save.playerName } : {}),
+    }
+
+    if (!ApiClient.isConfigured()) {
+      this.bus.emit('run:submitted', { status: 'no-backend', rank: null, runId: null })
+      return
+    }
+
+    const result = await ApiClient.submitRun(report)
+    if (!result) {
+      RunQueue.enqueue(report)
+      this.bus.emit('run:submitted', { status: 'queued', rank: null, runId: null })
+      return
+    }
+    this.bus.emit('run:submitted', {
+      status: 'accepted',
+      rank: result.rank,
+      runId: result.runId,
+    })
+    void RunQueue.flush()
+  }
+
   private cleanup(): void {
     for (const off of this.busUnsubs) off()
     this.busUnsubs = []
@@ -779,7 +920,5 @@ function resolveCosmetics(c: NetCosmetics | undefined): ResolvedCosmetics {
   } catch {
     /* no weapon drawn */
   }
-  // Touch the import so eslint doesn't bark when the aura plumbing lands.
-  void getAura
   return { color, clothing, clothingColor, accessory, weapon }
 }

@@ -3,6 +3,7 @@ import { createServer } from 'node:http'
 import {
   HostReqSchema,
   JoinReqSchema,
+  RejoinReqSchema,
   type ClientMsg,
   type ErrorMsg,
   parseMsg,
@@ -156,8 +157,30 @@ async function main() {
           sockets.set(ws, { room, client })
           return
         }
+        if (msg.t === 'rejoin') {
+          // Reconexión a una sala existente: el cliente conserva su sessionId
+          // en memoria entre sockets (mobile background, refresh accidental).
+          const parsed = RejoinReqSchema.safeParse(msg)
+          if (!parsed.success) {
+            sendError(ws, 'invalid-message', `bad rejoin payload: ${parsed.error.message}`)
+            return
+          }
+          if (!authIfPresent(parsed.data.accessToken, ws)) return
+          const room = findRoom(parsed.data.code)
+          if (!room) {
+            sendError(ws, 'rejoin-failed', `no room with code ${parsed.data.code}`)
+            return
+          }
+          const client = room.rejoinClient(ws, parsed.data.sessionId)
+          if (!client) {
+            sendError(ws, 'rejoin-failed', 'session expired or already connected')
+            return
+          }
+          sockets.set(ws, { room, client })
+          return
+        }
         // Anything else before handshake is invalid.
-        sendError(ws, 'invalid-message', 'first message must be `host` or `join`')
+        sendError(ws, 'invalid-message', 'first message must be `host`/`join`/`rejoin`')
         return
       }
 

@@ -130,7 +130,28 @@ export interface WaveBuffVoteReq {
   buffId: string
 }
 
-export type ClientMsg = HostReq | JoinReq | ReadyReq | InputReq | LeaveReq | WaveBuffVoteReq
+/** Reconexión a una sala existente preservando el slot. El server mantiene
+ *  un grace window de ~60s tras un disconnect; durante ese período el slot
+ *  queda "zombie" y un nuevo socket puede reclamarlo enviando este mensaje
+ *  con el `sessionId` original. Útil para mobile Safari que mata WS al
+ *  backgroundear ~30s.
+ */
+export const RejoinReqSchema = z.object({
+  t: z.literal('rejoin'),
+  code: z.string().regex(/^[A-Z2-9]{4}$/, '4-letter code'),
+  sessionId: z.string().min(1).max(64),
+  accessToken: z.string().optional(),
+})
+export type RejoinReq = z.infer<typeof RejoinReqSchema>
+
+export type ClientMsg =
+  | HostReq
+  | JoinReq
+  | RejoinReq
+  | ReadyReq
+  | InputReq
+  | LeaveReq
+  | WaveBuffVoteReq
 
 // ============================================================================
 // Server → Client
@@ -155,8 +176,18 @@ export interface PhaseMsg {
   phase: 'lobby' | 'playing' | 'gameover'
   /** When entering 'playing', the server sends the deterministic seed so
    *  clients can reproduce non-essential RNG-driven cosmetics if they want.
-   *  When 'gameover', null. */
+   *  When 'gameover', se reenvía el seed original para que cada cliente
+   *  pueda mandarlo en el RunReport (anti-cheat: server lo correlaciona). */
   seed: number | null
+  /** Final stats cuando phase=gameover. Cada cliente arma su RunReport y
+   *  lo submitea al api de leaderboard via `POST /runs`. Co-op shared:
+   *  wave/kills/gold son los del run completo (no per-cliente). */
+  summary?: {
+    wave: number
+    kills: number
+    gold: number
+    durationSec: number
+  }
 }
 
 /** Full state snapshot. Sent every server tick (~30 Hz) while phase='playing'.
@@ -283,6 +314,7 @@ export interface ErrorMsg {
     | 'invalid-message'
     | 'auth-failed'
     | 'internal'
+    | 'rejoin-failed'
   msg: string
 }
 

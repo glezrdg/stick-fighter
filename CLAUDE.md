@@ -25,7 +25,7 @@ stick-fighter/
 
 ## Fase actual
 
-**F5R'-C completado: multi co-op 2P jugable end-to-end con paridad visible básica. Sprint de unificación arquitectural en curso.**
+**Paridad SP↔multi cerrada (Sprints 1+2+3 mergeados a main). Cloud save y atkSpeed/knockback combat queden como follow-ups.**
 
 Lo que ya funciona end-to-end:
 
@@ -67,16 +67,16 @@ ROI más alto. Porta el motor client-only a `packages/sim` y hace que **un cambi
 - Bridge correcto de stats al cliente: server emite `stats:changed` per-cliente, NetArenaScene lo escucha y los chips HUD reaccionan.
 - Skill cooldowns en HUD: server emite `skill:cooldown:changed`, chips Q/E reactivos.
 
-### Sprint 3: Features de paridad (3-4 días)
+### Sprint 3: Features de paridad ✅ COMPLETADO (excepto cloud-save)
 
 Lo que falta como feature, no como bug:
 
-- Skills (Q/E activos + pasivos) jugables en multi. Sale "gratis" tras Sprint 2 si se hace bien.
-- Submit run al terminar multi → POST `/runs` (con seed verificable). Hoy multi no graba leaderboard.
-- Reconnect tras backgrounding mobile (`allowReconnection` 60s grace).
-- Drop-out gracioso (peer se va, vos seguís solo). Hoy server cierra la room al primer disconnect.
-- Cloud save post-run.
-- Aura/glow render del player desde `cosmetics.aura`.
+- ✅ **Skills (Q/E)** jugables en multi (entró en Sprint 2 vía `SkillSystem` por cliente).
+- ✅ **Submit run al terminar multi** → server emite `summary` en PhaseMsg('gameover'); cada cliente arma su `RunReport` y lo envía vía `ApiClient.submitRun`. Si el api está offline cae al `RunQueue` (igual que SP).
+- ✅ **Reconnect tras backgrounding** — server guarda el slot 60s tras un disconnect. Cliente envía `RejoinReq` con su `sessionId` original; reintentos cada 2.5s (×30) hasta éxito o expiración.
+- ✅ **Drop-out gracioso** — server NO mata la sala cuando un peer se desconecta; el otro sigue solo. Cliente muestra toast "$name se desconectó — seguís solo".
+- ⏸️ **Cloud save post-run** — DEFERRED. Requiere endpoint de API nuevo (`PUT /cloud-save`), Zod schema del save completo, resolución de conflicto por `updated_at`, y UI de "tu save remoto es más nuevo, sobreescribir local?". Es una feature backend completa, no un polish item de paridad. Los runs ya graban via `POST /runs` (lo que cuenta para leaderboard). El `save.gold/bestWave/totalKills` se actualizan localmente en multi igual que en SP.
+- ✅ **Aura/glow del player** — `auraGraphics` layer dedicado en NetArenaScene. 3 discs concéntricos con color desde `cosmetics.aura`. Activo cuando attackTimer > 0.
 
 ### Fuera de scope (decisiones de diseño primero, no código)
 
@@ -85,6 +85,8 @@ Lo que falta como feature, no como bug:
 
 ### Después de paridad
 
+- **Cloud save** (deferred del Sprint 3): endpoint `PUT/GET /cloud-save` en `apps/api`, Zod schema del save completo via `@stick/shared`, sync al login + conflict resolution.
+- **atkSpeed/knockback aplicados** (deuda de SP también): hoy ambos chips muestran el valor correcto pero el combate no honra el multiplicador. CombatSystem usa `attackPatterns[step].durFrames` fijos y EnemySystem no tiene knockback scaling. ~2-3h.
 - F6 mobile (Capacitor), F7 desktop (Tauri).
 - F2.5 sprites pixelart (parqueado, sigue siendo opcional).
 

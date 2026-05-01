@@ -108,6 +108,16 @@ export interface RoomSnapshot {
   waveBuffOffer: { wave: number; buffIds: ReadonlyArray<string>; timeoutSec: number } | null
   /** Estado de votos en vivo. UI lo usa para "esperando al peer…". */
   waveBuffVotes: ReadonlyArray<{ sessionId: string; buffId: string | null }>
+  /** Summary del run cuando el server flipea phase='gameover'. La escena lo
+   *  consume para construir RunReport + submitear al leaderboard. Null hasta
+   *  que llegue el final. */
+  gameoverSummary: {
+    seed: number
+    wave: number
+    kills: number
+    gold: number
+    durationSec: number
+  } | null
 }
 
 const initialSnapshot: RoomSnapshot = {
@@ -120,6 +130,7 @@ const initialSnapshot: RoomSnapshot = {
   error: null,
   waveBuffOffer: null,
   waveBuffVotes: [],
+  gameoverSummary: null,
 }
 
 class NetClient {
@@ -127,6 +138,9 @@ class NetClient {
   private snap: RoomSnapshot = initialSnapshot
   private listeners = new Set<(s: RoomSnapshot) => void>()
   private resolvedListeners = new Set<(msg: WaveBuffResolvedMsg) => void>()
+  private peerLeftListeners = new Set<
+    (info: { sessionId: string; name: string; reason: string }) => void
+  >()
   /** Last input we sent — used to coalesce duplicate emissions. */
   private lastSentInput: { dx: number; dy: number } = { dx: 0, dy: 0 }
 
@@ -223,6 +237,15 @@ class NetClient {
     }
   }
 
+  /** Suscripción al evento "peer se fue". NetArenaScene lo escucha para
+   *  mostrar un toast tipo "yermino se desconectó — seguís solo". */
+  onPeerLeft(fn: (info: { sessionId: string; name: string; reason: string }) => void): () => void {
+    this.peerLeftListeners.add(fn)
+    return () => {
+      this.peerLeftListeners.delete(fn)
+    }
+  }
+
   /** Disconnect cleanly. The server frees the slot immediately. */
   async leave(): Promise<void> {
     if (!this.ws) return
@@ -304,6 +327,10 @@ class NetClient {
             error: this.snap.error ?? { code: 'internal', msg: 'connection closed' },
           })
           resolve(null)
+        } else if (this.snap.phase === 'playing' && this.snap.code && this.snap.sessionId) {
+          // Disconnect during play → server holds our slot for ~60s. Try to
+          // reconnect via `rejoin` with backoff. Si falla todo, caemos a error.
+          this.tryRejoin(this.snap.code, this.snap.sessionId)
         } else if (this.snap.phase !== 'gameover') {
           this.update({
             ...this.snap,
@@ -320,6 +347,63 @@ class NetClient {
     })
   }
 
+  /**
+   * Backoff loop attempting to rejoin a room after an unexpected disconnect.
+   * Server holds the slot for ~60s; intentamos cada 2.5s hasta éxito o
+   * hasta que el server diga `rejoin-failed` (slot expiró).
+   */
+  private tryRejoin(code: string, sessionId: string, attempt = 1): void {
+    if (attempt > 30) {
+      // 75s ≈ pasamos el grace window — abandonar.
+      this.update({
+        ...this.snap,
+        phase: 'error',
+        error: { code: 'internal', msg: 'reconnect grace expired' },
+      })
+      return
+    }
+    if (!REALTIME_URL) return
+    const ws = new WebSocket(REALTIME_URL)
+    this.ws = ws
+    let settled = false
+
+    ws.addEventListener('open', () => {
+      ws.send(encodeMsg({ t: 'rejoin', code, sessionId, accessToken: this.token() }))
+    })
+    ws.addEventListener('message', (ev) => {
+      const text = typeof ev.data === 'string' ? ev.data : ''
+      const msg = parseMsg<ServerMsg>(text)
+      if (!msg) return
+      this.applyServerMsg(msg)
+      if (!settled) {
+        if (msg.t === 'lobby') {
+          settled = true
+          // Mantenemos `phase: 'playing'` por si llega antes que el próximo state.
+          this.update({ ...this.snap, phase: 'playing', error: null })
+        } else if (msg.t === 'error') {
+          settled = true
+          if (msg.code === 'rejoin-failed') {
+            this.update({
+              ...this.snap,
+              phase: 'error',
+              error: { code: msg.code, msg: msg.msg },
+            })
+          }
+        }
+      }
+    })
+    ws.addEventListener('close', () => {
+      if (!settled) {
+        // Attempt didn't complete — schedule next retry.
+        setTimeout(() => this.tryRejoin(code, sessionId, attempt + 1), 2500)
+      }
+      if (this.ws === ws) this.ws = null
+    })
+    ws.addEventListener('error', () => {
+      // El 'close' va a correr después; ahí decidimos si reintentar.
+    })
+  }
+
   private applyServerMsg(msg: ServerMsg): void {
     switch (msg.t) {
       case 'lobby':
@@ -330,17 +414,28 @@ class NetClient {
           ...this.snap,
           phase:
             msg.phase === 'playing' ? 'playing' : msg.phase === 'gameover' ? 'gameover' : 'lobby',
+          // En gameover el server adjunta el summary final. Lo guardamos en
+          // el snapshot para que NetArenaScene lo lea y submitee el run.
+          gameoverSummary:
+            msg.phase === 'gameover' && msg.summary && typeof msg.seed === 'number'
+              ? { seed: msg.seed, ...msg.summary }
+              : this.snap.gameoverSummary,
         })
         return
       case 'state':
         this.update({ ...this.snap, state: msg })
         return
-      case 'peer-left':
+      case 'peer-left': {
+        const left = this.snap.players.find((p) => p.sessionId === msg.sessionId)
         this.update({
           ...this.snap,
           players: this.snap.players.filter((p) => p.sessionId !== msg.sessionId),
         })
+        const name = left?.name ?? 'tu compañero'
+        for (const fn of this.peerLeftListeners)
+          fn({ sessionId: msg.sessionId, name, reason: msg.reason })
         return
+      }
       case 'error':
         this.update({ ...this.snap, error: { code: msg.code, msg: msg.msg } })
         return
