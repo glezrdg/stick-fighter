@@ -635,36 +635,59 @@ export class NetArenaScene extends BaseScene {
     for (const p of projectiles) {
       const angle = Math.atan2(p.vy, p.vx)
       if (p.type === 'arrow') {
-        // Flecha del player: shaft de madera + punta steel + fletching rojo.
+        // Flecha del player: shaft + tip + fletching, con sombra debajo y
+        // estela glow detrás. La estela vibra sutilmente para que la flecha
+        // se sienta veloz, no estática.
         const len = 18
-        const tx = p.x + Math.cos(angle) * len
-        const ty = p.y + Math.sin(angle) * len
-        const bx = p.x - Math.cos(angle) * len * 0.5
-        const by = p.y - Math.sin(angle) * len * 0.5
-        g.lineStyle(2, 0xa06820, 1)
+        const cosA = Math.cos(angle)
+        const sinA = Math.sin(angle)
+        const tx = p.x + cosA * len
+        const ty = p.y + sinA * len
+        const bx = p.x - cosA * len * 0.5
+        const by = p.y - sinA * len * 0.5
+        // Estela glow dorada detrás (hint de movimiento). Dos circulos en
+        // gradiente, no requiere setBlendMode (mantenemos render simple).
+        const trailX = bx - cosA * 14
+        const trailY = by - sinA * 14
+        g.fillStyle(0xffd54a, 0.18)
+        g.fillCircle(trailX, trailY, 7)
+        g.fillStyle(0xffd54a, 0.32)
+        g.fillCircle(bx - cosA * 6, by - sinA * 6, 5)
+        // Sombra elíptica abajo (proyección a piso).
+        g.fillStyle(0x000000, 0.22)
+        g.fillEllipse(p.x, p.y + 22, 14, 4)
+        // Wood shaft.
+        g.lineStyle(2.5, 0xa06820, 1)
         g.beginPath()
         g.moveTo(bx, by)
         g.lineTo(tx, ty)
         g.strokePath()
-        const tipBackX = tx - Math.cos(angle) * 4
-        const tipBackY = ty - Math.sin(angle) * 4
+        // Steel tip (triangle).
+        const tipBackX = tx - cosA * 5
+        const tipBackY = ty - sinA * 5
         const perp = angle + Math.PI / 2
-        g.fillStyle(0xcfd8dc, 1)
+        const cosP = Math.cos(perp)
+        const sinP = Math.sin(perp)
+        g.fillStyle(0xe8edf0, 1)
         g.fillTriangle(
           tx,
           ty,
-          tipBackX + Math.cos(perp) * 2.2,
-          tipBackY + Math.sin(perp) * 2.2,
-          tipBackX - Math.cos(perp) * 2.2,
-          tipBackY - Math.sin(perp) * 2.2,
+          tipBackX + cosP * 2.6,
+          tipBackY + sinP * 2.6,
+          tipBackX - cosP * 2.6,
+          tipBackY - sinP * 2.6,
         )
+        // Tip highlight (white nick).
+        g.fillStyle(0xffffff, 0.85)
+        g.fillCircle(tx, ty, 1.2)
+        // Red fletching at the tail (3 mini triangles para sentirse más rico).
         g.fillStyle(0xc41a1a, 1)
-        const fX1 = bx + Math.cos(perp) * 3
-        const fY1 = by + Math.sin(perp) * 3
-        const fX2 = bx - Math.cos(perp) * 3
-        const fY2 = by - Math.sin(perp) * 3
-        const fbx = bx - Math.cos(angle) * 4
-        const fby = by - Math.sin(angle) * 4
+        const fX1 = bx + cosP * 3.2
+        const fY1 = by + sinP * 3.2
+        const fX2 = bx - cosP * 3.2
+        const fY2 = by - sinP * 3.2
+        const fbx = bx - cosA * 5
+        const fby = by - sinA * 5
         g.fillTriangle(bx, by, fX1, fY1, fbx, fby)
         g.fillTriangle(bx, by, fX2, fY2, fbx, fby)
       } else if (p.type === 'spear') {
@@ -701,16 +724,28 @@ export class NetArenaScene extends BaseScene {
         g.setDepth(900)
         this.enemyGraphics.set(e.id, g)
       }
-      g.clear()
+      // No g.clear() — stickman.draw() ya lo hace internamente. Antes
+      // hacíamos doble clear y se cargaba el setPosition/scale del frame.
       g.setPosition(e.x, e.y)
-      // Color desde el JSON de content (mismo que SP), no un hash custom.
-      // attackKind: respetar lo que envía el server — antes lo forzábamos a
-      // 'chop' siempre y los archers se veían como brutes pegando.
+      // Pull the FULL EnemyType del content para que el render matchee
+      // exactamente el de SP: color + clothing + accessory + scale + clothingColor.
+      // Antes solo pasábamos color y caía a defaults para todo lo demás —
+      // por eso brutes/archers se veían como stickmen genéricos sin
+      // diferenciación visual.
       let color = 0x202020
+      let clothing: ReturnType<typeof getEnemyType>['clothing'] | undefined
+      let accessory: ReturnType<typeof getEnemyType>['accessory'] | undefined
+      let clothingColor: number | undefined
+      let scale = 1
       try {
-        color = parseInt(getEnemyType(e.typeId).color.slice(1), 16)
+        const type = getEnemyType(e.typeId)
+        color = parseInt(type.color.slice(1), 16)
+        clothing = type.clothing
+        accessory = type.accessory
+        if (type.clothingColor) clothingColor = parseInt(type.clothingColor.slice(1), 16)
+        scale = type.scale
       } catch {
-        // typeId desconocido → fallback gris oscuro
+        // typeId desconocido → fallback minimal
       }
       const enemyState: StickmanRenderState = {
         vx: e.vx,
@@ -721,13 +756,16 @@ export class NetArenaScene extends BaseScene {
         attackKind: coerceKind(e.attackKind ?? ''),
         attackTimer: e.attackTimer,
         attackDuration: e.attackDuration || 0.5,
-        attackDirX: e.facingX,
-        attackDirY: e.facingY,
+        attackDirX: e.attackDirX ?? e.facingX,
+        attackDirY: e.attackDirY ?? e.facingY,
         hurtFlash: e.hurtFlash,
         iframes: 0,
         color,
+        ...(clothing ? { clothing } : {}),
+        ...(accessory ? { accessory } : {}),
+        ...(clothingColor !== undefined ? { clothingColor } : {}),
       }
-      this.stickman.draw(g, enemyState)
+      this.stickman.draw(g, enemyState, scale)
       this.updateEnemyOverlay(e)
     }
   }

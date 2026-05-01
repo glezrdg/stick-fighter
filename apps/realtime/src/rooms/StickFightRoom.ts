@@ -244,6 +244,23 @@ export class StickFightRoom {
       rngNext: () => this.rng?.next() ?? 0,
       getDmgMul: () => client.effectiveStats.dmgMul,
       getCritChance: () => client.effectiveStats.critChance,
+      // Sin esto, tryShoot setea el cooldown pero la flecha NUNCA SPAWNEA.
+      // ProjectileSystem.spawn lo llama el callback; ownerId='player' marca
+      // la flecha como friendly (collide con enemies, no con peers).
+      onShoot: ({ x, y, dirX, dirY, speed, dmg, life, radius }) => {
+        this.projectiles?.spawn({
+          type: 'arrow',
+          x,
+          y,
+          dirX,
+          dirY,
+          speed,
+          dmg,
+          life,
+          radius,
+          ownerId: 'player',
+        })
+      },
     })
     const skills = new SkillSystem({ bus: sharedBus })
     const runState = createRunState({ seed: this.seed, playerMaxHp: effectiveStats.maxHp })
@@ -416,6 +433,9 @@ export class StickFightRoom {
       for (const c of this.clients.values()) {
         if (!c.downed) continue
         c.killsByPeerSinceDown++
+        console.info(
+          `[stick_fight] ${this.code}: ${c.sessionId} (${c.name}) revival ${c.killsByPeerSinceDown}/${REVIVAL_KILLS_REQUIRED}`,
+        )
         if (c.killsByPeerSinceDown >= REVIVAL_KILLS_REQUIRED) {
           this.reviveClient(c)
         }
@@ -976,6 +996,8 @@ export class StickFightRoom {
           attackKind: e.attackKind ?? '',
           attackTimer: e.attackTimer,
           attackDuration: e.attackDuration,
+          attackDirX: e.attackDirX,
+          attackDirY: e.attackDirY,
           hp: Math.max(0, Math.floor(e.hp)),
           maxHp: e.maxHp,
           hurtFlash: e.hurtFlash,

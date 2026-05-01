@@ -312,6 +312,11 @@ export interface NetEnemy {
   attackKind?: string
   attackTimer: number
   attackDuration: number
+  /** Dirección frozen del swing (sim Enemy.attackDirX/Y). Sin esto el
+   *  StickmanRenderer cae a `facingX/Y` que cambia mid-swing — el smear
+   *  se ve raro porque el brazo gira con el cuerpo. */
+  attackDirX?: number
+  attackDirY?: number
   hp: number
   maxHp: number
   hurtFlash: number

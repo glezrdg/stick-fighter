@@ -25,70 +25,102 @@ stick-fighter/
 
 ## Fase actual
 
-**Paridad SP↔multi cerrada (Sprints 1+2+3 mergeados a main). Cloud save y atkSpeed/knockback combat queden como follow-ups.**
+**Multi co-op 2P en producción. Sprints 1-4 mergeados a main. Quedan bugs de polish residuales (ver "Bugs conocidos" abajo) y features deferred (cloud save, móvil/desktop).**
 
 Lo que ya funciona end-to-end:
 
-- F1–F2.6: arena jugable, 8 enemigos, oleadas, jefes, buff cards, gore, tienda, skins, skills, save Zod versionado.
+- F1–F2.6: arena jugable SP completa — 8 enemigos, oleadas, jefes, buff cards, gore, tienda, skins, skills, save Zod versionado.
 - F3: AudioSystem procedural (sin assets), música por scene, sliders persistidos.
 - F4: backend Fastify desplegado en VPS personal (`stick-fighter-api.neomac.io`), tabla `users` + `runs`, leaderboard top-100 cacheado en memoria.
 - F4.5: cliente cableado al backend (submit run al terminar, leaderboard pollable desde menú).
 - F5 auth básica: `POST /auth/register`, `/auth/login`, `/auth/refresh`, `/auth/me`. bcrypt + JWT (access 15m / refresh 30d). Anonymous submissions siguen funcionando.
 - Refactor `packages/sim`: lógica determinística aislada del cliente Phaser (entities, behaviors, skills, systems). Reusada server-side por `apps/realtime`.
-- **F5R'-A/B/C**: multi co-op 2P sobre WS raw + JSON (`apps/realtime` en main, deployado en `wss://stick-fighter-realtime.neomac.io`). Cosmetics sync, Left4Dead-style downed/revival, gore + deathFx + camera shake, obstacles destructibles, wave buffs (server pausa, ambos votan).
+- **F5R'-A/B/C/D + Sprints 1-4**: multi co-op 2P sobre WS raw + JSON (`apps/realtime` en main, deployado en `wss://stick-fighter-realtime.neomac.io`). Cosmetics sync, Left4Dead-style downed/revival, gore + deathFx + camera shake, obstacles destructibles, wave buffs (server pausa, ambos votan), skills (Q/E), submit run al gameover, reconnect grace, drop-out gracioso, aura render, audio bridge, projectiles en wire, EnemySystem multi-target.
 - **Migración Vercel → VPS**: frontend ahora servido en `https://stick-fighter.neomac.io` desde el VPS personal (nginx:alpine + Traefik + cert wildcard `*.neomac.io` via cf-dns). Proyecto Vercel borrado.
 
-## Roadmap actual: paridad SP↔multi + unificación del motor
+## Trabajo hecho — historia de sprints (FYI para nuevos contributors)
 
-**Por qué existe este sprint**: hoy mismo el SP (`ArenaScene.ts`) y el multi (`StickFightRoom.ts` + `NetArenaScene.ts`) son **dos motores paralelos**. `packages/sim` cubre lo determinístico (combat, entities, behaviors, waves, obstacles), pero **muchos sistemas client-only nunca se portaron** (`SkillSystem`, `BuffSystem.computeStats()`, `runState` completo) y el server **reimplementa partes en simplificado** (damage mul, regen, wave-buff apply). Resultado: agregar una mecánica nueva = trabajo doble + drift garantizado.
+Si sos nuevo y querés saber qué hace cada parte, esta sección es la timeline de cómo llegamos al estado actual.
 
-**El fix** son 3 sprints chicos mergeados a `main` (sin branches largos). Cada uno entrega valor visible.
+### Sprint 1: Polish visible ✅ (commit `4df962c`)
 
-### Sprint 1: Polish visible (1-2 días) ← EN CURSO
+- HUD wrapper con opacity 0.18 durante `wave:buff:offer` (chips ya no se cuelan sobre las cards rojas).
+- NetArenaScene oculta name labels + HP bars de players mientras hay votación de buff.
+- WaveBuffCards muestra badges "✓ VOS"/"✓ PEER" + banner "esperando al otro" en multi (en SP no aparece, gracias a `isMulti()` check).
+- `NetPlayer.stats` agregado al protocolo (~12 B/player/tick). Server emite los 6 stats efectivos cada tick; cliente diff'ea y emite `stats:changed` al bus local → chips DMG/VEL/CRT/REG/KB/ORO reactivos.
+- Audio bridge inferred-from-diff: NetArenaScene emite `combat:hit`/`enemy:death`/`player:hurt`/`player:death`/`obstacle:explode` al bus local cuando detecta cambios en el state msg → AudioSystem reacciona igual que en SP.
 
-Lo que un jugador _ve_ mal hoy en multi:
+### Sprint 2: Unificación arquitectural ✅ (commit `a5af96a`) — ROI más alto
 
-- HUD encima de las wave-buff cards (chips HP/DMG/etc se cuelan).
-- Name labels ("yermino — vos") cruzan el modal de cards.
-- Falta indicador "✓ vos / esperando peer" sobre las cards después de votar.
-- Stats chips estáticos (siempre 1.00/1.00/1.00/5%) — server nunca emite `stats:changed`.
-- Combo counter del HUD queda en 0 — server no emite `combo:advance/finisher`.
-- Audio reactivo: events `enemy:death`, `gold:changed` llegan vía bus local pero no todos los del server hacen bridge → SFX faltante.
-- Hit-stop client-side (50-180ms freeze al pegar) ausente en multi.
-- Damage popups del peer + críticos dorados ausentes.
+- Protocolo `NetLoadout` (ownedSkills + equippedSkills + weaponId + weaponLevel) en HostReq/JoinReq. `NetClient.loadoutFromSave()` lo deriva del save local.
+- StickFightRoom: per-cliente `effectiveStats: EffectiveStats` computado vía `BuffSystem.computeStats()` al spawn + tras cada wave-buff resolve. **Mismo código que SP — sin drift entre los dos lados.**
+- CombatSystem ahora lee `getDmgMul`/`getCritChance` desde effectiveStats (no más `1+rb.dmg` crudo). Esto activa: weapon damage scaling (katana > fists × levelBonus), shield passive (+30 HP), cdReduce passive (skills cooldown × 0.75), golden passive (+50% gold).
+- Eliminado `ClientRunBuffs` duplicado — ahora se usa `RunBuffs` + `emptyRunBuffs()` directos de `@stick/sim`.
+- Per-RoomClient: `runState: RunState` (createRunState con seed compartido) + `skills: SkillSystem` (bus compartido). El sim cooldown tick corre en tickOnce per-cliente. **Skills Q/E vivas en multi** — kiBlast, swordTornado, finalFlash, dash, etc.
+- Tornado AOE per-cliente: `tickTornado()` copia 1:1 de loop.ts (sim) — no podemos llamar `tickArena()` entero porque es per-room (1 mundo, N players).
+- Protocol: `NetPlayer.skillSlots` (tuple) + `skillCooldowns` (NetSkillCooldown[2]). Cliente diff y emite `skills:equipped` + `skill:cooldown:changed`. Chips Q/E con icon + cooldown radial reactivo.
+- Gold drop server-side: `enemy:death` listener busca `getEnemyType().goldReward` y multiplica por `bestGoldMul()`. Co-op shared wallet — `bestGoldMul` premia que cualquiera tenga `golden` o haya pickeado +oro.
 
-### Sprint 2: Unificación arquitectural (3-5 días)
+### Sprint 3: Features de paridad ✅ (commit `ab7ab03`)
 
-ROI más alto. Porta el motor client-only a `packages/sim` y hace que **un cambio = un cambio** en ambos lados:
+- **Submit run al gameover**: server emite `PhaseMsg('gameover')` con `summary { wave, kills, gold, durationSec }` + seed. Cliente NetArenaScene en transición prev→gameover llama `persistMultiRun()` que actualiza save (gold/bestWave/totalKills) + arma RunReport con loadout local + submitea via `ApiClient.submitRun` (fallback a `RunQueue` si api offline). Misma ruta que SP.
+- **Drop-out gracioso**: `handleSocketClose` en lobby quita directo, en playing/gameover marca cliente como zombie (`ws=null`, `disconnectedAt=now`). `broadcast`/`send` tolera `ws=null`. `NetClient.onPeerLeft(fn)` listener ad-hoc; NetArenaScene muestra toast "$name se desconectó — seguís solo" 4s.
+- **Reconnect grace 60s**: protocol `RejoinReqSchema { t:'rejoin', code, sessionId, accessToken? }`. `RECONNECT_GRACE_MS=60s`. `RoomClient.disconnectedAt: number|null`. `rejoinClient(ws, sessionId)` reclama el slot zombie. tickOnce reapa zombies que excedieron grace. Cliente: si WS cierra durante 'playing' con sessionId conocido → `tryRejoin(code, sessionId)` con backoff 2.5s × 30 intentos = 75s window.
+- **Aura render del player**: `auraGraphics` layer dedicado (depth 900) en NetArenaScene. `drawPlayerAura(p)` por player visible: 3 discs concéntricos color desde `getAura(p.cosmetics.aura)`. Activo cuando `p.attackTimer > 0`; intensity escala con progress del swing.
+- **Cloud save** — DEFERRED. Requiere endpoint nuevo en apps/api + Zod schema del save completo + conflict resolution. Es feature backend, no parte de paridad multi.
 
-- Portar `SkillSystem` (Q/E + passives) a `sim`. Hoy multi tiene `c.input.skill = null` literal — los skills no funcionan en co-op.
-- Hacer que el server use `BuffSystem.computeStats()` igual que SP, eliminando el `applyBuffToClient` simplificado. Esto **prende automáticamente** los buffs hoy "silent": `atkSpeed` (acelera animación), `knockback` (escala empuje), `gold` (multiplica drops).
-- Unificar `runState`: hoy SP tiene `RunState` completo, server tiene `RoomClient.runBuffs` parcial. Alinear schemas.
-- Bridge correcto de stats al cliente: server emite `stats:changed` per-cliente, NetArenaScene lo escucha y los chips HUD reaccionan.
-- Skill cooldowns en HUD: server emite `skill:cooldown:changed`, chips Q/E reactivos.
+### Sprint 4: Fix bugs reales tras smoke prod ✅ (commit `1546306`)
 
-### Sprint 3: Features de paridad ✅ COMPLETADO (excepto cloud-save)
+Tras smoke real del usuario, varios "checkmarks" del Sprint 3 estaban incompletos. Audit del código confirmó cada bug. Fixes:
 
-Lo que falta como feature, no como bug:
+- **Enemies con estilo correcto**: `enemyColorOf()` (hash custom random) → `getEnemyType(typeId).color` del JSON. `attackKind: 'chop'` hardcoded → `coerceKind(e.attackKind)` real (protocol extendido con `NetEnemy.attackKind?: string`).
+- **GameOverScene en multi**: NetArenaScene en gameover ahora navega a 'GameOver' (mismo que SP) — antes saltaba al menú directo sin mostrar stats.
+- **Revival fix** (el bug "muere uno → game over"): `DOWNED_TIMEOUT_MS` 30s→60s. **Pausamos el rescue clock durante `pendingBuffPhase`** (`downedAt += SIM_TICK_MS` cada tick mientras la votación está abierta). `REVIVAL_KILLS_REQUIRED` 5→3 (más realista en co-op real).
+- **Skill cast broadcast**: KiBlast/FinalFlash/GroundPound son cones invisibles — sin FX broadcast, los players no sabían que el peer cast'eó. Protocol `SkillCastMsg`. Server cuando un cliente cast'ea exitosamente → broadcast a TODOS. Cliente `onSkillCast` → `spawnSkillCastFx()` aura burst (color del aura del caster) + shockwave por skillId + camera shake.
+- **EnemySystem multi-target**: `EnemySystem.update(enemies, player, dt)` aceptaba un Player único; server pasaba `firstAlive()` = siempre slot 0. Nuevo: `updateMulti(enemies, players[], dt)` — cada enemy elige al player vivo más cercano (squared distance, no sqrt). `update()` preservado como wrapper para no romper SP. Server: `this.enemies.updateMulti(enemiesList, alivePlayers, dt)`.
+- **Projectiles en wire**: `NetProjectile { id, type, x, y, vx, vy, ownerId }` + `StateMsg.projectiles`. Server: `ProjectileSystem` recibe `getEnemies` (sin esto las flechas del player no colisionaban). Cliente: `renderProjectiles()` copia 1:1 del SP — arrows con shaft + steel tip + fletching rojo, spears con punta, default orb violeta.
+- **Combat attribution + combo local**: heurística client-side — si self está mid-swing y el enemy <80px (alcance del melee), `attackerId='self'`. Combo local counter + reset timer 1.5s. Solo avanza con hits 'self'. Drives `combo:advance`/`combo:reset` al bus → HUD reactivo.
 
-- ✅ **Skills (Q/E)** jugables en multi (entró en Sprint 2 vía `SkillSystem` por cliente).
-- ✅ **Submit run al terminar multi** → server emite `summary` en PhaseMsg('gameover'); cada cliente arma su `RunReport` y lo envía vía `ApiClient.submitRun`. Si el api está offline cae al `RunQueue` (igual que SP).
-- ✅ **Reconnect tras backgrounding** — server guarda el slot 60s tras un disconnect. Cliente envía `RejoinReq` con su `sessionId` original; reintentos cada 2.5s (×30) hasta éxito o expiración.
-- ✅ **Drop-out gracioso** — server NO mata la sala cuando un peer se desconecta; el otro sigue solo. Cliente muestra toast "$name se desconectó — seguís solo".
-- ⏸️ **Cloud save post-run** — DEFERRED. Requiere endpoint de API nuevo (`PUT /cloud-save`), Zod schema del save completo, resolución de conflicto por `updated_at`, y UI de "tu save remoto es más nuevo, sobreescribir local?". Es una feature backend completa, no un polish item de paridad. Los runs ya graban via `POST /runs` (lo que cuenta para leaderboard). El `save.gold/bestWave/totalKills` se actualizan localmente en multi igual que en SP.
-- ✅ **Aura/glow del player** — `auraGraphics` layer dedicado en NetArenaScene. 3 discs concéntricos con color desde `cosmetics.aura`. Activo cuando attackTimer > 0.
+## Bugs conocidos / TODO inmediato
 
-### Fuera de scope (decisiones de diseño primero, no código)
+> Estos son bugs reportados por playtest del usuario que NO están todavía cerrados. Si vas a empezar a contribuir, empezá por acá.
 
-- Tienda mid-run en co-op: ¿pausa al peer? ¿shared gold? ¿shared inventory? Punto a discutir.
+- **Flechas se ven feas**: el render copiado de SP es funcional pero estético es pobre. Falta el trail (Phaser `setBlendMode(ADD)` con un leve glow + estela), pulse del tip metal, sombra debajo. Ver `apps/game/src/scenes/NetArenaScene.ts → renderProjectiles()`.
+- **Revival sigue sin cumplirse aunque pase la ronda**: a pesar del fix de Sprint 4, el contador `killsByPeerSinceDown` no parece avanzar consistentemente. Sospecha: `enemy:death` se emite por el sim al matar pero a veces el listener corre antes que el flag de byPlayer se evalúe correctamente. **Necesita diagnóstico server-side** (logs de `c.killsByPeerSinceDown` por tick cuando hay alguien downed).
+- **Skills compartidas entre players**: cuando un cliente equipa skills en su tienda, el OTRO también las tiene. **Causa raíz**: la tienda en SP escribe a `services.save.skills.equipped`. En multi, ambos clientes usan el mismo navegador-save-store si están en el mismo dispositivo. Pero más probablemente: el server no isola los loadouts — necesita verificar que `RoomClient.loadout` por sessionId NO se mezcla. Ver `apps/realtime/src/rooms/StickFightRoom.ts → addClient()`.
+- **Arco no funciona con F**: el `input:shoot` event sí se emite client-side (InputController), pero el botón F no llega al server o el `tryShoot` falla. **Necesita diagnóstico**: ver si el `pendingShoot` flag se setea, si se envía en `sendInput()`, si el server lo procesa en `handleMessage`. Probable: el cliente no está enviando `shoot: true` porque el `pendingShoot` se resetea antes del próximo `update()`.
+- **Estilo de enemies sigue distinto a SP**: ya se corrigió el color, pero los stickmen tienen otros detalles (cuernos para brutes, clothing, etc.) que SP usa desde `getSkin(enemyTypeId)` o similar. **Verificar**: `apps/game/src/scenes/ArenaScene.ts` cómo construye el `StickmanRenderState` para enemies vs `apps/game/src/scenes/NetArenaScene.ts → renderEnemies`.
+
+## Roadmap futuro (después de cerrar bugs conocidos)
+
+### Cloud save
+
+Endpoint `PUT/GET /cloud-save` en `apps/api`, Zod schema del save completo via `@stick/shared`, sync al login + conflict resolution UI.
+
+### atkSpeed/knockback aplicados al combate (deuda de SP también)
+
+Hoy ambos chips muestran el valor correcto pero el combate NO los honra. `CombatSystem` usa `attackPatterns[step].durFrames` fijos. `EnemySystem` no escala knockback. ~2-3h.
+
+### Más contenido
+
+Bosses con `phaseTransition` behavior, weapons exóticas, skins premium con gemas. Todo via JSON en `packages/content`.
+
+### F6 móvil (Capacitor)
+
+Mismo bundle web wrappeado, plugins Haptics + IAP + Sign in with Apple obligatorio.
+
+### F7 desktop (Tauri)
+
+Steam + itch.io. Binarios ~10MB. Crate `steamworks` para achievements.
+
+### F2.5 sprites pixelart (parqueado, opcional)
+
+Aseprite + TexturePacker. Pivot grande, mantener canvas vector hasta que se decida.
+
+### Decisiones de diseño abiertas (no código todavía)
+
+- Tienda mid-run en co-op: ¿pausa al peer? ¿shared gold? ¿shared inventory?
 - Pause menu en co-op: ¿pausa global o solo cámara local?
-
-### Después de paridad
-
-- **Cloud save** (deferred del Sprint 3): endpoint `PUT/GET /cloud-save` en `apps/api`, Zod schema del save completo via `@stick/shared`, sync al login + conflict resolution.
-- **atkSpeed/knockback aplicados** (deuda de SP también): hoy ambos chips muestran el valor correcto pero el combate no honra el multiplicador. CombatSystem usa `attackPatterns[step].durFrames` fijos y EnemySystem no tiene knockback scaling. ~2-3h.
-- F6 mobile (Capacitor), F7 desktop (Tauri).
-- F2.5 sprites pixelart (parqueado, sigue siendo opcional).
 
 ## Stack del backend (`apps/api`)
 
