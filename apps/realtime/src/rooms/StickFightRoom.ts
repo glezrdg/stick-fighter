@@ -1,9 +1,10 @@
-import { attackPatterns, getWaveBuff } from '@stick/content'
+import { attackPatterns, getEnemyType, getWaveBuff } from '@stick/content'
 import {
   type ClientMsg,
   type LobbyMsg,
   type NetCosmetics,
   type NetEnemy,
+  type NetLoadout,
   type NetObstacle,
   type NetPlayer,
   type PhaseMsg,
@@ -16,20 +17,30 @@ import {
 } from '@stick/shared'
 import {
   ARENA,
+  BuffSystem,
   CombatSystem,
   type Enemy,
   EnemySystem,
+  type EffectiveStats,
   type EventBus as SimBus,
   type Obstacle,
   ObstacleSystem,
   type Player,
   ProjectileSystem,
   type Rng,
+  type RunBuffs,
+  type RunState,
+  SkillSystem,
+  SWORD_TORNADO_DMG_MUL,
+  SWORD_TORNADO_RADIUS,
+  SWORD_TORNADO_TICK_SEC,
   WaveBuffSystem,
   WaveSystem,
   createEventBus,
   createPlayer,
   createRng,
+  createRunState,
+  emptyRunBuffs,
   updateMovement,
 } from '@stick/sim'
 import type { WebSocket } from 'ws'
@@ -56,6 +67,15 @@ const DEFAULT_COSMETICS: NetCosmetics = {
   aura: 'yellow',
 }
 
+/** Default loadout para clientes que no declaran uno: starter weapon (fists),
+ *  sin skills, level 1. Equivalente a un fresh save. */
+const DEFAULT_LOADOUT: NetLoadout = {
+  ownedSkills: [],
+  equippedSkills: [null, null],
+  weaponId: 'fists',
+  weaponLevel: 1,
+}
+
 /** Left4Dead-style revival: peer must kill this many enemies to bring you back. */
 const REVIVAL_KILLS_REQUIRED = 5
 /** Max time spent downed before the run ends if no revive happens. */
@@ -67,30 +87,6 @@ const REVIVAL_IFRAMES_SEC = 2.0
 
 /** Wave-buff voting window: si nadie vota antes de esto, autopick random. */
 const WAVE_BUFF_TIMEOUT_MS = 30_000
-/** Crit chance base (mirror BuffSystem.BASE_CRIT_CHANCE). */
-const BASE_CRIT_CHANCE = 0.05
-
-/**
- * Per-client run buff accumulator. Espejo simplificado de `RunBuffs` de sim
- * para la pista server-authoritative de multi: lo que se aplica visiblemente
- * hoy es `dmg`, `crit`, `hpMax`, `regen`, `heal`. Los otros (`atkSpeed`,
- * `knockback`, `gold`) se acumulan pero no se pipean al combate todavía
- * — equivalen a no-ops hasta que el server compute stats efectivos.
- */
-interface ClientRunBuffs {
-  dmg: number
-  atkSpeed: number
-  crit: number
-  knockback: number
-  gold: number
-  regen: number
-  hpMax: number
-}
-
-function emptyRunBuffs(): ClientRunBuffs {
-  return { dmg: 0, atkSpeed: 0, crit: 0, knockback: 0, gold: 0, regen: 0, hpMax: 0 }
-}
-
 /** Estado del proceso de votación entre waves. Nullable: null = playing normal. */
 interface PendingBuffPhase {
   wave: number
@@ -128,7 +124,19 @@ export interface RoomClient {
   killsByPeerSinceDown: number
   /** Run buff accumulator. Acumula a través de las cards entre waves; se
    *  consulta vía closures cuando CombatSystem necesita dmg/crit. */
-  runBuffs: ClientRunBuffs
+  runBuffs: RunBuffs
+  /** Loadout (skills owned + equipped + weapon). Inmutable durante el run. */
+  loadout: NetLoadout
+  /** Stats efectivos derivados de loadout + runBuffs. Recomputado al spawn
+   *  y tras cada wave-buff aplicado. Source of truth para dmg/crit/gold/maxHp. */
+  effectiveStats: EffectiveStats
+  /** Per-client RunState — albergue de timers de skills (tornadoTimer/Acc),
+   *  cooldowns y demás estado que sim/`SkillSystem` y SkillContext exigen. */
+  runState: RunState
+  /** SkillSystem per-client — maneja cooldowns + dispatch a Skill.execute().
+   *  Bus compartido con el resto de la sala; los efectos (damage AOE, FX
+   *  events) afectan al mundo común. */
+  skills: SkillSystem
 }
 
 const SIM_TICK_HZ = 30
@@ -188,26 +196,40 @@ export class StickFightRoom {
    * Add a freshly-connected client. Caller has already validated the
    * lobby code + capacity. Sends the lobby msg back over `ws`.
    */
-  addClient(ws: WebSocket, name: string, cosmetics?: NetCosmetics): RoomClient {
+  addClient(
+    ws: WebSocket,
+    name: string,
+    cosmetics?: NetCosmetics,
+    loadout?: NetLoadout,
+  ): RoomClient {
     const sessionId = `s${this.code}-${this.nextSessionSeq++}`
     const slot: 0 | 1 = this.clients.size === 0 ? 0 : 1
     const spawnX = slot === 0 ? ARENA.width / 2 - 60 : ARENA.width / 2 + 60
     const spawnY = ARENA.height / 2
-    const sim = createPlayer({ x: spawnX, y: spawnY })
     const runBuffs = emptyRunBuffs()
+    const effectiveLoadout = loadout ?? DEFAULT_LOADOUT
+    // Compute stats efectivos UNA VEZ al ingresar — incluye weapon damage
+    // base × levelBonus, golden passive, shield HP bonus, cdReduce.
+    // Sin esto el server ignoraba el arma equipada (siempre dmg=1).
+    const effectiveStats = computeStatsFor(runBuffs, effectiveLoadout)
+    // Spawn con el maxHp efectivo (base 100 + shield bonus 30 si owned).
+    const sim = createPlayer({ x: spawnX, y: spawnY, maxHp: effectiveStats.maxHp })
 
     // The combat system needs `getEnemies` — we late-bind it via a closure so
     // the WaveSystem (created later in startRun) can be referenced safely.
-    // dmgMul/critChance también via closure: leen el `runBuffs` que se
-    // muta cuando el server resuelve una wave-buff card.
+    // dmgMul/critChance también via closure: leen `effectiveStats` que se
+    // recompone cuando el server resuelve una wave-buff card.
+    const sharedBus = this.busOrFallback()
     const combat = new CombatSystem({
-      bus: this.busOrFallback(),
+      bus: sharedBus,
       attackPatterns,
       getEnemies: () => this.waves?.getEnemies() ?? [],
       rngNext: () => this.rng?.next() ?? 0,
-      getDmgMul: () => 1 + runBuffs.dmg,
-      getCritChance: () => BASE_CRIT_CHANCE + runBuffs.crit,
+      getDmgMul: () => client.effectiveStats.dmgMul,
+      getCritChance: () => client.effectiveStats.critChance,
     })
+    const skills = new SkillSystem({ bus: sharedBus })
+    const runState = createRunState({ seed: this.seed, playerMaxHp: effectiveStats.maxHp })
 
     const client: RoomClient = {
       ws,
@@ -224,6 +246,10 @@ export class StickFightRoom {
       downedAt: null,
       killsByPeerSinceDown: 0,
       runBuffs,
+      loadout: effectiveLoadout,
+      effectiveStats,
+      runState,
+      skills,
     }
     this.clients.set(sessionId, client)
 
@@ -317,14 +343,13 @@ export class StickFightRoom {
       this.alive = alive
       this.total = total
     })
-    this.bus.on('gold:changed', ({ gold }) => {
-      this.gold = gold
-    })
 
-    // Each enemy kill counts toward reviving any downed teammates.
-    // We don't know who landed the killing blow (bus event has no attacker),
-    // so any kill counts — that's fine for co-op.
-    this.bus.on('enemy:death', () => {
+    // Cada kill: reviva counters + drop de gold (co-op shared wallet).
+    // El sim no emite gold:changed por su cuenta; era un hook speculativo.
+    // Acá computamos la recompensa con el goldMul más alto de los players
+    // vivos (premia tener `golden` passive equipado por al menos uno).
+    this.bus.on('enemy:death', ({ enemyId, byPlayer }) => {
+      // Revival progress (any kill counts — ver F5R'-C-3).
       for (const c of this.clients.values()) {
         if (!c.downed) continue
         c.killsByPeerSinceDown++
@@ -332,6 +357,21 @@ export class StickFightRoom {
           this.reviveClient(c)
         }
       }
+      if (!byPlayer) return
+      // Look up the dead enemy in the wave system to read its content config.
+      // The enemy aún está en la lista (CombatSystem emite antes de reapDead).
+      const enemy = this.waves?.getEnemies().find((e) => e.id === enemyId)
+      if (!enemy) return
+      let goldReward = 0
+      try {
+        goldReward = getEnemyType(enemy.typeId).goldReward
+      } catch {
+        return
+      }
+      const bestMul = this.bestGoldMul()
+      const gain = Math.floor(goldReward * bestMul)
+      if (gain <= 0) return
+      this.gold += gain
     })
 
     // Wave terminada → pausamos el tick global y abrimos votación de buff.
@@ -384,11 +424,17 @@ export class StickFightRoom {
       }
       updateMovement(c.sim, { x: c.input.dx, y: c.input.dy }, dt)
       c.combat.update(c.sim, dt)
-      // Regen passive (cumula desde wave buffs `regen`). Sin tope inferior:
-      // si rb.regen <= 0 no suma. Cap a maxHp.
-      if (c.runBuffs.regen > 0 && c.sim.hp > 0) {
-        c.sim.hp = Math.min(c.sim.maxHp, c.sim.hp + c.runBuffs.regen * dt)
+      // Tick de cooldowns de skills. SkillSystem.update emite
+      // 'skill:cooldown:changed' al bus compartido — Sprint 2.4 lo broadcastea.
+      c.skills.update(c.runState, dt)
+      // Regen pasivo. `effectiveStats.regenPerSec` ya combina runBuffs.regen
+      // con el bonus implícito que pueda venir de skills futuras.
+      if (c.effectiveStats.regenPerSec > 0 && c.sim.hp > 0) {
+        c.sim.hp = Math.min(c.sim.maxHp, c.sim.hp + c.effectiveStats.regenPerSec * dt)
       }
+      // Tornado AOE per-client: si la skill seteó tornadoTimer, drainamos +
+      // aplicamos daño cada SWORD_TORNADO_TICK_SEC. Copia 1:1 de loop.ts.
+      this.tickTornado(c, dt)
       if (c.input.attack) {
         c.combat.tryAttack(c.sim)
         c.input.attack = false
@@ -397,8 +443,29 @@ export class StickFightRoom {
         c.combat.tryShoot(c.sim)
         c.input.shoot = false
       }
-      // Skills wiring lands when the SkillSystem is per-room (TODO post-smoke).
-      c.input.skill = null
+      // Skill cast: el cliente envía slot 0|1 cuando aprieta Q/E. Lo
+      // consumimos one-shot y lo pasamos a SkillSystem.cast() — misma
+      // ruta que SP, mismas skills (kiBlast, swordTornado, finalFlash, etc).
+      if (c.input.skill !== null && this.waves) {
+        const slot = c.input.skill
+        const skillId = c.loadout.equippedSkills[slot]
+        if (skillId) {
+          c.skills.cast({
+            slot,
+            skillId,
+            cdMul: c.effectiveStats.cdMul,
+            ctx: {
+              player: c.sim,
+              enemies: this.waves.getEnemies(),
+              bus: this.bus!,
+              rng: this.rng!,
+              runState: c.runState,
+              dmgMul: c.effectiveStats.dmgMul,
+            },
+          })
+        }
+        c.input.skill = null
+      }
 
       // Did this player just go down?
       if (c.sim.hp <= 0) {
@@ -442,6 +509,58 @@ export class StickFightRoom {
   private firstAlive(): RoomClient | undefined {
     for (const c of this.clients.values()) if (!c.downed) return c
     return undefined
+  }
+
+  /** Mejor goldMul entre los vivos. En co-op con shared wallet, esto premia
+   *  que cualquiera tenga `golden` passive equipado o haya pickeado +oro. */
+  private bestGoldMul(): number {
+    let best = 1
+    for (const c of this.clients.values()) {
+      if (c.downed) continue
+      if (c.effectiveStats.goldMul > best) best = c.effectiveStats.goldMul
+    }
+    return best
+  }
+
+  /** Tornado per-client: drena el timer + aplica AOE damage a enemies en
+   *  radio cada SWORD_TORNADO_TICK_SEC. Copiado de loop.ts (sim) — sin
+   *  poder llamar a tickArena() entero porque es per-room (1 mundo, 2 sims). */
+  private tickTornado(c: RoomClient, dt: number): void {
+    const rs = c.runState
+    if (rs.tornadoTimer > 0) {
+      rs.tornadoTimer = Math.max(0, rs.tornadoTimer - dt)
+      rs.tornadoTickAcc += dt
+      while (rs.tornadoTickAcc >= SWORD_TORNADO_TICK_SEC) {
+        rs.tornadoTickAcc -= SWORD_TORNADO_TICK_SEC
+        this.applyTornadoDamage(c, c.effectiveStats.dmgMul * SWORD_TORNADO_DMG_MUL)
+      }
+    } else {
+      rs.tornadoTickAcc = 0
+    }
+  }
+
+  /** Damage pulse ring around the player. Hits every alive enemy within radius. */
+  private applyTornadoDamage(c: RoomClient, dmg: number): void {
+    if (!this.waves) return
+    const enemies = this.waves.getEnemies()
+    for (const e of enemies) {
+      const dx = e.x - c.sim.x
+      const dy = e.y - c.sim.y
+      if (Math.hypot(dx, dy) > SWORD_TORNADO_RADIUS) continue
+      e.hp -= dmg
+      e.hurtFlash = 0.18
+      if (e.hp <= 0) {
+        // Emite enemy:death — los listeners (revival, gold, audio) reaccionan.
+        this.bus!.emit('enemy:death', { enemyId: e.id, byPlayer: true })
+      } else {
+        this.bus!.emit('combat:hit', {
+          attackerId: c.sessionId,
+          targetId: e.id,
+          dmg,
+          crit: false,
+        })
+      }
+    }
   }
 
   /** Transition a client from alive → downed: hp=0, sim frozen, peer's
@@ -582,8 +701,9 @@ export class StickFightRoom {
     this.waves.startNextWave()
   }
 
-  /** Mirror simplificado de WaveBuffSystem.apply, pero mutando el Player +
-   *  acumulador de buffs server-side (no usamos RunState completo aquí). */
+  /** Aplica un wave buff: muta `runBuffs` (acumulador), recompila stats
+   *  efectivos vía `BuffSystem.computeStats()` y sincroniza el sim del
+   *  player. Misma fórmula que SP — sin drift entre los dos lados. */
   private applyBuffToClient(c: RoomClient, buffId: string): void {
     const buff = getWaveBuff(buffId)
     const rb = c.runBuffs
@@ -606,17 +726,21 @@ export class StickFightRoom {
       case 'regen':
         rb.regen += buff.value
         break
-      case 'hpMax': {
+      case 'hpMax':
         rb.hpMax += buff.value
-        c.sim.maxHp += buff.value
-        // Heal por el delta — coincide con la semántica de SP.
-        c.sim.hp = Math.min(c.sim.maxHp, c.sim.hp + buff.value)
+        // No mutamos c.sim.maxHp directo: lo deriva el recompute abajo.
+        // Sí healeamos por el delta — coincide con SP.
+        c.sim.hp = c.sim.hp + buff.value
         break
-      }
       case 'heal':
         c.sim.hp = c.sim.maxHp
         break
     }
+    // Recompute → propaga a CombatSystem (vía closure), regen tick, gold mul,
+    // maxHp del sim, y broadcast (vía stateMsg lee de effectiveStats).
+    c.effectiveStats = computeStatsFor(rb, c.loadout)
+    c.sim.maxHp = c.effectiveStats.maxHp
+    c.sim.hp = Math.min(c.sim.maxHp, c.sim.hp)
   }
 
   private votesMsg(): WaveBuffVotesMsg {
@@ -683,7 +807,7 @@ export class StickFightRoom {
   private stateMsg(): StateMsg {
     const players: NetPlayer[] = []
     for (const c of this.clients.values()) {
-      const rb = c.runBuffs
+      const es = c.effectiveStats
       players.push({
         sessionId: c.sessionId,
         name: c.name,
@@ -707,17 +831,22 @@ export class StickFightRoom {
         revivalProgress: c.downed
           ? Math.min(1, c.killsByPeerSinceDown / REVIVAL_KILLS_REQUIRED)
           : 0,
-        // Stats efectivos para el HUD del cliente. Sprint 2 los pondrá detrás
-        // de BuffSystem.computeStats(); por ahora los derivamos inline desde
-        // runBuffs para que los chips reaccionen al pickear cards.
+        // Stats efectivos derivados por BuffSystem.computeStats() — incluyen
+        // weapon damage × levelBonus, golden passive 1.5x, shield +30 HP, etc.
+        // El cliente diff'ea esto para emitir `stats:changed` en su bus local.
         stats: {
-          dmgMul: 1 + rb.dmg,
-          atkSpeedMul: 1 + rb.atkSpeed,
-          critChance: BASE_CRIT_CHANCE + rb.crit,
-          regenPerSec: rb.regen,
-          knockbackMul: 1 + rb.knockback,
-          goldMul: 1 + rb.gold,
+          dmgMul: es.dmgMul,
+          atkSpeedMul: es.atkSpeedMul,
+          critChance: es.critChance,
+          regenPerSec: es.regenPerSec,
+          knockbackMul: es.knockbackMul,
+          goldMul: es.goldMul,
         },
+        skillSlots: c.loadout.equippedSkills,
+        skillCooldowns: [
+          { remaining: c.skills.getCooldown(0), total: c.skills.getCooldownTotal(0) },
+          { remaining: c.skills.getCooldown(1), total: c.skills.getCooldownTotal(1) },
+        ],
       })
     }
 
@@ -829,6 +958,19 @@ function clamp01(n: number): number {
   if (n < -1) return -1
   if (n > 1) return 1
   return n
+}
+
+/**
+ * Wrapper sobre `BuffSystem.computeStats()` con args del room. Misma fórmula
+ * que SP — sin drift entre los dos lados (Sprint 2 unificación).
+ */
+function computeStatsFor(rb: RunBuffs, loadout: NetLoadout): EffectiveStats {
+  return BuffSystem.computeStats({
+    ownedSkills: loadout.ownedSkills,
+    runBuffs: rb,
+    equippedWeaponId: loadout.weaponId,
+    weaponLevel: loadout.weaponLevel,
+  })
 }
 
 // Suppress unused warning until reconnect flow lands.

@@ -21,6 +21,7 @@ import {
   type ErrorMsg,
   type LobbyMsg,
   type NetCosmetics,
+  type NetLoadout,
   type ServerMsg,
   type StateMsg,
   type WaveBuffOfferMsg,
@@ -44,6 +45,21 @@ export function cosmeticsFromSave(save: SaveCurrent): NetCosmetics {
     weapon: weaponId,
     weaponLevel: save.weaponLevels[weaponId] ?? 1,
     aura: save.cosmetics.aura.equipped,
+  }
+}
+
+/**
+ * Loadout efectivo del save: skills owned + equipped + arma + nivel.
+ * El server lo pasa a `BuffSystem.computeStats()` para calcular daño,
+ * HP máx, gold mul, cdMul. Sin esto el server usa defaults (todo en 1.0).
+ */
+export function loadoutFromSave(save: SaveCurrent): NetLoadout {
+  const weaponId = save.cosmetics.sword.equipped
+  return {
+    ownedSkills: save.skills.owned,
+    equippedSkills: [save.skills.equipped[0] ?? null, save.skills.equipped[1] ?? null],
+    weaponId,
+    weaponLevel: save.weaponLevels[weaponId] ?? 1,
   }
 }
 
@@ -134,12 +150,17 @@ class NetClient {
 
   /** Open a new room. Resolves to the snapshot after the server's lobby ack,
    *  or null on failure (no URL configured / connection refused / server error). */
-  async hostRoom(name: string, cosmetics?: NetCosmetics): Promise<RoomSnapshot | null> {
+  async hostRoom(
+    name: string,
+    cosmetics?: NetCosmetics,
+    loadout?: NetLoadout,
+  ): Promise<RoomSnapshot | null> {
     return this.connectThen({
       t: 'host',
       name,
       accessToken: this.token(),
       ...(cosmetics ? { cosmetics } : {}),
+      ...(loadout ? { loadout } : {}),
     })
   }
 
@@ -148,6 +169,7 @@ class NetClient {
     name: string,
     code: string,
     cosmetics?: NetCosmetics,
+    loadout?: NetLoadout,
   ): Promise<RoomSnapshot | null> {
     return this.connectThen({
       t: 'join',
@@ -155,6 +177,7 @@ class NetClient {
       code: code.toUpperCase(),
       accessToken: this.token(),
       ...(cosmetics ? { cosmetics } : {}),
+      ...(loadout ? { loadout } : {}),
     })
   }
 

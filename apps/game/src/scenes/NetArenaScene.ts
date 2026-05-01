@@ -331,6 +331,30 @@ export class NetArenaScene extends BaseScene {
         })
       }
     }
+    // Equipped skills (slot 0 + slot 1): primero tick → emit. Idempotente.
+    if (me?.skillSlots) {
+      const cur = me.skillSlots
+      const prevSlots = meBefore?.skillSlots
+      if (!prevSlots || prevSlots[0] !== cur[0] || prevSlots[1] !== cur[1]) {
+        this.bus.emit('skills:equipped', { slot0: cur[0], slot1: cur[1] })
+      }
+    }
+    // Cooldown progress per slot. Server tickea en SkillSystem.update y los
+    // pinta en NetPlayer cada tick (~30Hz). Emite cuando cambian para que
+    // el chip Q/E reaccione fluido.
+    if (me?.skillCooldowns) {
+      for (const slot of [0, 1] as const) {
+        const cur = me.skillCooldowns[slot]
+        const prev = meBefore?.skillCooldowns?.[slot]
+        if (!prev || prev.remaining !== cur.remaining || prev.total !== cur.total) {
+          this.bus.emit('skill:cooldown:changed', {
+            slot,
+            remaining: cur.remaining,
+            total: cur.total,
+          })
+        }
+      }
+    }
 
     if (!prev) return
 

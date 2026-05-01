@@ -43,6 +43,31 @@ export const NetCosmeticsSchema = z.object({
 })
 export type NetCosmetics = z.infer<typeof NetCosmeticsSchema>
 
+/**
+ * Loadout efectivo para el run en multi. El server lo usa con
+ * `BuffSystem.computeStats()` para derivar daño efectivo, HP máx, gold mul,
+ * cooldown reducido — exactamente la misma fórmula que SP. Sin esto el
+ * server ignora weapon damage, golden passive, shield, cdReduce.
+ *
+ * Validación es laxa (string ids con cap 40, length cap 16) — si el cliente
+ * miente con un id inexistente, `getWeapon`/skill registry tira y el server
+ * cae al default. Co-op entre amigos, no ladder competitivo.
+ */
+export const NetLoadoutSchema = z.object({
+  /** Pasivas + activas que el jugador "posee" (compradas). */
+  ownedSkills: z.array(z.string().min(1).max(40)).max(16),
+  /** Las dos skills equipadas en Q/E. null = slot vacío. */
+  equippedSkills: z.tuple([
+    z.string().min(1).max(40).nullable(),
+    z.string().min(1).max(40).nullable(),
+  ]),
+  /** Arma que el jugador eligió. */
+  weaponId: z.string().min(1).max(40),
+  /** Nivel del arma (multiplica daño base via BuffSystem). */
+  weaponLevel: z.number().int().min(1).max(20),
+})
+export type NetLoadout = z.infer<typeof NetLoadoutSchema>
+
 /** Open a brand-new room. Server picks a fresh 4-letter lobby code. */
 export const HostReqSchema = z.object({
   t: z.literal('host'),
@@ -52,6 +77,9 @@ export const HostReqSchema = z.object({
   accessToken: z.string().optional(),
   /** What this player wants to look like. Falls back to defaults if absent. */
   cosmetics: NetCosmeticsSchema.optional(),
+  /** Skills owned + equipped + weapon level. Sin esto el server usa defaults
+   *  (sin skills, weapon level 1) y el daño se siente igual al de un fresh save. */
+  loadout: NetLoadoutSchema.optional(),
 })
 export type HostReq = z.infer<typeof HostReqSchema>
 
@@ -62,6 +90,7 @@ export const JoinReqSchema = z.object({
   name: z.string().trim().min(1).max(20),
   accessToken: z.string().optional(),
   cosmetics: NetCosmeticsSchema.optional(),
+  loadout: NetLoadoutSchema.optional(),
 })
 export type JoinReq = z.infer<typeof JoinReqSchema>
 
@@ -192,6 +221,12 @@ export interface NetPlayer {
    *  bus so the HUD chips (DMG/VEL/CRT/REG/KB/ORO) reaccionan vivos.
    *  Optional para retrocompat con servers/cliente más viejos. */
   stats?: NetPlayerStats
+  /** IDs de las dos skills equipadas (Q/E). null = slot vacío. El cliente
+   *  emite `skills:equipped` al bus local apenas el slot 0 cambia para
+   *  que los chips muestren el icono correcto. */
+  skillSlots?: [string | null, string | null]
+  /** Cooldown actual de cada slot. Para que el chip muestre progreso radial. */
+  skillCooldowns?: [NetSkillCooldown, NetSkillCooldown]
 }
 
 /** Subset de `EffectiveStats` que el server computa per-cliente para que
@@ -204,6 +239,14 @@ export interface NetPlayerStats {
   regenPerSec: number
   knockbackMul: number
   goldMul: number
+}
+
+/** Cooldown remaining + total per skill slot. El cliente lo lee y emite
+ *  `skill:cooldown:changed` al bus local para que los chips Q/E muestren
+ *  el progreso radial igual que en SP. */
+export interface NetSkillCooldown {
+  remaining: number
+  total: number
 }
 
 export interface NetEnemy {
