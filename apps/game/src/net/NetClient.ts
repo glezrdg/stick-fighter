@@ -23,6 +23,9 @@ import {
   type NetCosmetics,
   type ServerMsg,
   type StateMsg,
+  type WaveBuffOfferMsg,
+  type WaveBuffResolvedMsg,
+  type WaveBuffVotesMsg,
   encodeMsg,
   parseMsg,
 } from '@stick/shared'
@@ -84,6 +87,11 @@ export interface RoomSnapshot {
   state: StateMsg | null
   /** Last error from the server, sticky until cleared. */
   error: { code: ErrorMsg['code']; msg: string } | null
+  /** Wave-buff voting abierta (server pausó). NetArenaScene escucha esto y
+   *  monta WaveBuffCards con los buffIds. Null cuando no hay votación. */
+  waveBuffOffer: { wave: number; buffIds: ReadonlyArray<string>; timeoutSec: number } | null
+  /** Estado de votos en vivo. UI lo usa para "esperando al peer…". */
+  waveBuffVotes: ReadonlyArray<{ sessionId: string; buffId: string | null }>
 }
 
 const initialSnapshot: RoomSnapshot = {
@@ -94,12 +102,15 @@ const initialSnapshot: RoomSnapshot = {
   players: [],
   state: null,
   error: null,
+  waveBuffOffer: null,
+  waveBuffVotes: [],
 }
 
 class NetClient {
   private ws: WebSocket | null = null
   private snap: RoomSnapshot = initialSnapshot
   private listeners = new Set<(s: RoomSnapshot) => void>()
+  private resolvedListeners = new Set<(msg: WaveBuffResolvedMsg) => void>()
   /** Last input we sent — used to coalesce duplicate emissions. */
   private lastSentInput: { dx: number; dy: number } = { dx: 0, dy: 0 }
 
@@ -172,6 +183,21 @@ class NetClient {
       ...(edges?.skill !== undefined ? { skill: edges.skill } : {}),
     }
     this.send(msg)
+  }
+
+  /** Vota una de las cartas mostradas tras `wave-buff:offer`. Server resuelve
+   *  cuando ambos votan o cuando el timeout expira (autopick). */
+  sendWaveBuffVote(buffId: string): void {
+    this.send({ t: 'wave-buff:vote', buffId })
+  }
+
+  /** Suscripción ad-hoc a la resolución de la carta. NetArenaScene la usa
+   *  para mostrar un toast tipo "Wave 2: +regen 1.0/s". */
+  onWaveBuffResolved(fn: (msg: WaveBuffResolvedMsg) => void): () => void {
+    this.resolvedListeners.add(fn)
+    return () => {
+      this.resolvedListeners.delete(fn)
+    }
   }
 
   /** Disconnect cleanly. The server frees the slot immediately. */
@@ -299,7 +325,34 @@ class NetClient {
         // No PongMsg in the protocol yet; we just rely on TCP keepalive +
         // browser's automatic WS ping reply. Reserved for future RTT tracking.
         return
+      case 'wave-buff:offer':
+        this.applyBuffOffer(msg)
+        return
+      case 'wave-buff:votes':
+        this.applyBuffVotes(msg)
+        return
+      case 'wave-buff:resolved':
+        this.applyBuffResolved(msg)
+        return
     }
+  }
+
+  private applyBuffOffer(msg: WaveBuffOfferMsg): void {
+    this.update({
+      ...this.snap,
+      waveBuffOffer: { wave: msg.wave, buffIds: msg.buffIds, timeoutSec: msg.timeoutSec },
+      waveBuffVotes: [],
+    })
+  }
+
+  private applyBuffVotes(msg: WaveBuffVotesMsg): void {
+    this.update({ ...this.snap, waveBuffVotes: msg.votes })
+  }
+
+  private applyBuffResolved(msg: WaveBuffResolvedMsg): void {
+    // Limpiamos el offer para que el overlay desaparezca.
+    this.update({ ...this.snap, waveBuffOffer: null, waveBuffVotes: [] })
+    for (const fn of this.resolvedListeners) fn(msg)
   }
 
   private applyLobby(msg: LobbyMsg): void {

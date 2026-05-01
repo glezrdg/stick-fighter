@@ -146,6 +146,7 @@ export class InputController {
 
   private handleKeyDown(e: KeyboardEvent): void {
     if (e.repeat) return
+    if (isEditableTarget(e.target)) return
     if (PREVENT_DEFAULT_KEYS.has(e.code)) e.preventDefault()
     this.keysDown.add(e.code)
 
@@ -161,6 +162,7 @@ export class InputController {
   }
 
   private handleKeyUp(e: KeyboardEvent): void {
+    if (isEditableTarget(e.target)) return
     this.keysDown.delete(e.code)
   }
 
@@ -261,4 +263,21 @@ export class InputController {
 function matches(binding: readonly string[], code: string): boolean {
   for (const c of binding) if (c === code) return true
   return false
+}
+
+/**
+ * True if the keyboard event originated from a text-editable element
+ * (`<input>`, `<textarea>`, or `[contenteditable]`). When the user is
+ * typing in the lobby/auth overlays we must NOT preventDefault() on WASD,
+ * F, J, K, L — that would swallow the letters before they reach the field.
+ */
+function isEditableTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false
+  if (target.isContentEditable) return true
+  const tag = target.tagName
+  if (tag === 'INPUT') {
+    const type = (target as HTMLInputElement).type.toLowerCase()
+    return type !== 'button' && type !== 'submit' && type !== 'checkbox' && type !== 'radio'
+  }
+  return tag === 'TEXTAREA' || tag === 'SELECT'
 }

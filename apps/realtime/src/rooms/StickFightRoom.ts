@@ -1,4 +1,4 @@
-import { attackPatterns } from '@stick/content'
+import { attackPatterns, getWaveBuff } from '@stick/content'
 import {
   type ClientMsg,
   type LobbyMsg,
@@ -9,6 +9,9 @@ import {
   type PhaseMsg,
   type ServerMsg,
   type StateMsg,
+  type WaveBuffOfferMsg,
+  type WaveBuffResolvedMsg,
+  type WaveBuffVotesMsg,
   encodeMsg,
 } from '@stick/shared'
 import {
@@ -22,6 +25,7 @@ import {
   type Player,
   ProjectileSystem,
   type Rng,
+  WaveBuffSystem,
   WaveSystem,
   createEventBus,
   createPlayer,
@@ -61,6 +65,41 @@ const REVIVAL_HP_FRACTION = 0.5
 /** Invulnerability seconds granted after revive so you don't insta-die again. */
 const REVIVAL_IFRAMES_SEC = 2.0
 
+/** Wave-buff voting window: si nadie vota antes de esto, autopick random. */
+const WAVE_BUFF_TIMEOUT_MS = 30_000
+/** Crit chance base (mirror BuffSystem.BASE_CRIT_CHANCE). */
+const BASE_CRIT_CHANCE = 0.05
+
+/**
+ * Per-client run buff accumulator. Espejo simplificado de `RunBuffs` de sim
+ * para la pista server-authoritative de multi: lo que se aplica visiblemente
+ * hoy es `dmg`, `crit`, `hpMax`, `regen`, `heal`. Los otros (`atkSpeed`,
+ * `knockback`, `gold`) se acumulan pero no se pipean al combate todavía
+ * — equivalen a no-ops hasta que el server compute stats efectivos.
+ */
+interface ClientRunBuffs {
+  dmg: number
+  atkSpeed: number
+  crit: number
+  knockback: number
+  gold: number
+  regen: number
+  hpMax: number
+}
+
+function emptyRunBuffs(): ClientRunBuffs {
+  return { dmg: 0, atkSpeed: 0, crit: 0, knockback: 0, gold: 0, regen: 0, hpMax: 0 }
+}
+
+/** Estado del proceso de votación entre waves. Nullable: null = playing normal. */
+interface PendingBuffPhase {
+  wave: number
+  buffIds: readonly string[]
+  expiresAt: number
+  /** sessionId → buffId votado. Ausente = aún no votó. */
+  votes: Map<string, string>
+}
+
 export interface RoomClient {
   ws: WebSocket
   sessionId: string
@@ -87,6 +126,9 @@ export interface RoomClient {
   downedAt: number | null
   /** Counter of enemies the peer has killed since this player went down. */
   killsByPeerSinceDown: number
+  /** Run buff accumulator. Acumula a través de las cards entre waves; se
+   *  consulta vía closures cuando CombatSystem necesita dmg/crit. */
+  runBuffs: ClientRunBuffs
 }
 
 const SIM_TICK_HZ = 30
@@ -122,6 +164,10 @@ export class StickFightRoom {
   private alive = 0
   private total = 0
 
+  /** Wave-buff: si != null, el tick global no avanza combate; los clientes
+   *  ven las 3 cartas y deben votar. Se limpia al resolver. */
+  private pendingBuffPhase: PendingBuffPhase | null = null
+
   constructor(
     code: string,
     private readonly onDispose: (code: string) => void,
@@ -148,14 +194,19 @@ export class StickFightRoom {
     const spawnX = slot === 0 ? ARENA.width / 2 - 60 : ARENA.width / 2 + 60
     const spawnY = ARENA.height / 2
     const sim = createPlayer({ x: spawnX, y: spawnY })
+    const runBuffs = emptyRunBuffs()
 
     // The combat system needs `getEnemies` — we late-bind it via a closure so
     // the WaveSystem (created later in startRun) can be referenced safely.
+    // dmgMul/critChance también via closure: leen el `runBuffs` que se
+    // muta cuando el server resuelve una wave-buff card.
     const combat = new CombatSystem({
       bus: this.busOrFallback(),
       attackPatterns,
       getEnemies: () => this.waves?.getEnemies() ?? [],
       rngNext: () => this.rng?.next() ?? 0,
+      getDmgMul: () => 1 + runBuffs.dmg,
+      getCritChance: () => BASE_CRIT_CHANCE + runBuffs.crit,
     })
 
     const client: RoomClient = {
@@ -172,6 +223,7 @@ export class StickFightRoom {
       downed: false,
       downedAt: null,
       killsByPeerSinceDown: 0,
+      runBuffs,
     }
     this.clients.set(sessionId, client)
 
@@ -211,6 +263,9 @@ export class StickFightRoom {
       }
       case 'leave':
         this.removeClient(client.sessionId, 'consented')
+        return
+      case 'wave-buff:vote':
+        this.handleBuffVote(client, msg.buffId)
         return
       case 'host':
       case 'join':
@@ -279,6 +334,9 @@ export class StickFightRoom {
       }
     })
 
+    // Wave terminada → pausamos el tick global y abrimos votación de buff.
+    this.bus.on('wave:complete', ({ wave }) => this.openBuffPhase(wave))
+
     // Re-bind each client's CombatSystem now that bus/rng are real (the
     // closures in the constructors already point to `this.waves` etc.).
     // Nothing to do — the closures resolve lazily.
@@ -301,6 +359,16 @@ export class StickFightRoom {
 
     if (this.phase !== 'playing' || !this.waves || !this.enemies || !this.projectiles) return
 
+    // Wave-buff voting: si está abierto, no avanzamos sim. Solo chequeamos
+    // timeout (autopick) y seguimos broadcasteando state para que el HUD
+    // de cada cliente refleje lo último (HP, gold, etc.).
+    if (this.pendingBuffPhase) {
+      if (now >= this.pendingBuffPhase.expiresAt) this.resolveWaveBuff('autopick')
+      this.tick++
+      this.broadcast(this.stateMsg())
+      return
+    }
+
     // Per-player: input + movement + combat tick + edge actions.
     // Downed players are skipped — they lie on the floor at hp=0 waiting
     // for a peer to revive them.
@@ -316,6 +384,11 @@ export class StickFightRoom {
       }
       updateMovement(c.sim, { x: c.input.dx, y: c.input.dy }, dt)
       c.combat.update(c.sim, dt)
+      // Regen passive (cumula desde wave buffs `regen`). Sin tope inferior:
+      // si rb.regen <= 0 no suma. Cap a maxHp.
+      if (c.runBuffs.regen > 0 && c.sim.hp > 0) {
+        c.sim.hp = Math.min(c.sim.maxHp, c.sim.hp + c.runBuffs.regen * dt)
+      }
       if (c.input.attack) {
         c.combat.tryAttack(c.sim)
         c.input.attack = false
@@ -418,8 +491,143 @@ export class StickFightRoom {
   private endRun(reason: 'all-downed' | 'rescue-timeout'): void {
     if (this.phase !== 'playing') return
     this.phase = 'gameover'
+    // Si había votación pendiente la cancelamos — el run terminó.
+    this.pendingBuffPhase = null
     console.info(`[stick_fight] ${this.code}: gameover (${reason})`)
     this.broadcast({ t: 'phase', phase: 'gameover', seed: null } satisfies PhaseMsg)
+  }
+
+  // ----------------------------------------------------- wave-buff voting
+
+  /** Abre votación entre waves. Pausa el sim global, ofrece 3 cartas, espera
+   *  votos. La siguiente wave arranca cuando se resuelve. */
+  private openBuffPhase(wave: number): void {
+    if (!this.rng) return
+    if (this.pendingBuffPhase) return // defensa: ya abierto
+    const offer = WaveBuffSystem.rollOffer(this.rng, 3)
+    this.pendingBuffPhase = {
+      wave,
+      buffIds: offer.map((b) => b.id),
+      expiresAt: Date.now() + WAVE_BUFF_TIMEOUT_MS,
+      votes: new Map(),
+    }
+    this.broadcast({
+      t: 'wave-buff:offer',
+      wave,
+      buffIds: this.pendingBuffPhase.buffIds,
+      timeoutSec: Math.ceil(WAVE_BUFF_TIMEOUT_MS / 1000),
+    } satisfies WaveBuffOfferMsg)
+    this.broadcast(this.votesMsg())
+  }
+
+  private handleBuffVote(client: RoomClient, buffId: string): void {
+    const phase = this.pendingBuffPhase
+    if (!phase) return
+    if (!phase.buffIds.includes(buffId)) return // voto inválido (anti-tampering)
+    phase.votes.set(client.sessionId, buffId)
+    this.broadcast(this.votesMsg())
+    // Todos los clientes vivos en sala votaron → resolver inmediato.
+    if (phase.votes.size >= this.clients.size) {
+      this.resolveWaveBuff('votes-complete')
+    }
+  }
+
+  /** Decide qué buff gana, lo aplica a TODOS los players (co-op shared
+   *  progression), broadcastea, y reanuda con la wave siguiente. */
+  private resolveWaveBuff(trigger: 'votes-complete' | 'autopick'): void {
+    const phase = this.pendingBuffPhase
+    if (!phase || !this.rng || !this.waves) return
+
+    let winnerId: string
+    let reason: WaveBuffResolvedMsg['reason']
+    const distinctVotes = Array.from(new Set(phase.votes.values()))
+
+    if (trigger === 'autopick' && distinctVotes.length === 0) {
+      // Nadie votó a tiempo → random de la oferta.
+      const idx = Math.floor(this.rng.next() * phase.buffIds.length)
+      const fallback = phase.buffIds[idx] ?? phase.buffIds[0]
+      if (!fallback) return
+      winnerId = fallback
+      reason = 'autopick'
+    } else if (distinctVotes.length === 1) {
+      // Todos votaron lo mismo (o solo uno votó y el otro timeouteó).
+      winnerId = distinctVotes[0] ?? phase.buffIds[0] ?? ''
+      if (!winnerId) return
+      reason = 'agreement'
+    } else {
+      // Votos divergentes → uno al azar entre los votados.
+      const idx = Math.floor(this.rng.next() * distinctVotes.length)
+      const pick = distinctVotes[idx] ?? distinctVotes[0]
+      if (!pick) return
+      winnerId = pick
+      reason = 'random-from-votes'
+    }
+
+    // Aplicar a TODOS los clientes (incluso al downed — al revivir le sirve).
+    for (const c of this.clients.values()) {
+      this.applyBuffToClient(c, winnerId)
+    }
+
+    this.broadcast({
+      t: 'wave-buff:resolved',
+      wave: phase.wave,
+      buffId: winnerId,
+      reason,
+    } satisfies WaveBuffResolvedMsg)
+
+    this.pendingBuffPhase = null
+    console.info(
+      `[stick_fight] ${this.code}: wave ${phase.wave} buff resolved → ${winnerId} (${reason})`,
+    )
+    this.waves.startNextWave()
+  }
+
+  /** Mirror simplificado de WaveBuffSystem.apply, pero mutando el Player +
+   *  acumulador de buffs server-side (no usamos RunState completo aquí). */
+  private applyBuffToClient(c: RoomClient, buffId: string): void {
+    const buff = getWaveBuff(buffId)
+    const rb = c.runBuffs
+    switch (buff.kind) {
+      case 'dmg':
+        rb.dmg += buff.value
+        break
+      case 'atkSpeed':
+        rb.atkSpeed += buff.value
+        break
+      case 'crit':
+        rb.crit += buff.value
+        break
+      case 'knockback':
+        rb.knockback += buff.value
+        break
+      case 'gold':
+        rb.gold += buff.value
+        break
+      case 'regen':
+        rb.regen += buff.value
+        break
+      case 'hpMax': {
+        rb.hpMax += buff.value
+        c.sim.maxHp += buff.value
+        // Heal por el delta — coincide con la semántica de SP.
+        c.sim.hp = Math.min(c.sim.maxHp, c.sim.hp + buff.value)
+        break
+      }
+      case 'heal':
+        c.sim.hp = c.sim.maxHp
+        break
+    }
+  }
+
+  private votesMsg(): WaveBuffVotesMsg {
+    const phase = this.pendingBuffPhase
+    return {
+      t: 'wave-buff:votes',
+      votes: Array.from(this.clients.values()).map((c) => ({
+        sessionId: c.sessionId,
+        buffId: phase?.votes.get(c.sessionId) ?? null,
+      })),
+    }
   }
 
   private removeClient(sessionId: string, reason: 'consented' | 'timeout' | 'kicked'): void {

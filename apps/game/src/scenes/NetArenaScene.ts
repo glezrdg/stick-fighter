@@ -147,7 +147,16 @@ export class NetArenaScene extends BaseScene {
     this.busUnsubs.push(this.bus.on('input:shoot', () => (this.pendingShoot = true)))
     this.busUnsubs.push(this.bus.on('input:skill', ({ slot }) => (this.pendingSkill = slot)))
 
+    // Wave-buff bridge: el server pausa el tick y broadcastea `waveBuffOffer`.
+    // Lo traducimos a `wave:buff:offer` en el bus local para que el componente
+    // existente WaveBuffCards reaccione igual que en SP. El click sobre una
+    // carta emite `wave:buff:pick` → reenviamos el voto al server por WS.
+    this.busUnsubs.push(
+      this.bus.on('wave:buff:pick', ({ buffId }) => netClient.sendWaveBuffVote(buffId)),
+    )
+
     this.netUnsub = netClient.subscribe((s) => {
+      const prevOffer = this.snap.waveBuffOffer
       this.snap = s
       // Server says it's over (or we got error/disconnected) → bail to menu.
       if (s.phase === 'gameover' || s.phase === 'error' || s.phase === 'idle') {
@@ -161,6 +170,18 @@ export class NetArenaScene extends BaseScene {
           })
         }
         this.scene.start('MainMenu')
+        return
+      }
+      // Translate net offer transitions into local-bus events that the
+      // existing WaveBuffCards (mounted in main.tsx) consumes.
+      if (!prevOffer && s.waveBuffOffer) {
+        this.bus.emit('wave:buff:offer', {
+          wave: s.waveBuffOffer.wave,
+          buffIds: s.waveBuffOffer.buffIds,
+        })
+      } else if (prevOffer && !s.waveBuffOffer) {
+        // Resolved (or cancelled) — hide the cards.
+        this.bus.emit('wave:resume', { wave: prevOffer.wave })
       }
     })
 

@@ -65,4 +65,8 @@ export {
   type ReadyReq,
   type ServerMsg,
   type StateMsg,
+  type WaveBuffOfferMsg,
+  type WaveBuffResolvedMsg,
+  type WaveBuffVoteReq,
+  type WaveBuffVotesMsg,
 } from './realtime/protocol'

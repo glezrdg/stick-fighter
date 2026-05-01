@@ -94,7 +94,14 @@ export interface LeaveReq {
   t: 'leave'
 }
 
-export type ClientMsg = HostReq | JoinReq | ReadyReq | InputReq | LeaveReq
+/** Cliente vota una de las cartas de la oferta entre-waves. Server resuelve
+ *  cuando ambos votan o cuando el timeout de 30s expira. */
+export interface WaveBuffVoteReq {
+  t: 'wave-buff:vote'
+  buffId: string
+}
+
+export type ClientMsg = HostReq | JoinReq | ReadyReq | InputReq | LeaveReq | WaveBuffVoteReq
 
 // ============================================================================
 // Server → Client
@@ -227,7 +234,46 @@ export interface PingMsg {
   nonce: number
 }
 
-export type ServerMsg = LobbyMsg | PhaseMsg | StateMsg | PeerLeftMsg | ErrorMsg | PingMsg
+/** Wave terminada → server pausa el tick global, ofrece 3 buffs. Ambos clientes
+ *  votan vía `WaveBuffVoteReq`. Si coinciden, ese gana; si difieren, server
+ *  elige uno al azar entre los dos votos; si nadie vota en 30s, server elige
+ *  random de la oferta. Resolución llega como `WaveBuffResolvedMsg`. */
+export interface WaveBuffOfferMsg {
+  t: 'wave-buff:offer'
+  wave: number
+  buffIds: ReadonlyArray<string>
+  /** Cuántos segundos quedan antes del autopick. UI puede mostrar countdown. */
+  timeoutSec: number
+}
+
+/** Indicador en vivo de quién votó qué (mientras esperás al peer). */
+export interface WaveBuffVotesMsg {
+  t: 'wave-buff:votes'
+  /** Map sessionId → buffId votado (o null si aún no votó). */
+  votes: ReadonlyArray<{ sessionId: string; buffId: string | null }>
+}
+
+/** Server resolvió la votación, aplicó el buff a ambos players, y va a reanudar.
+ *  El cliente esconde las cartas y muestra (opcional) un toast. */
+export interface WaveBuffResolvedMsg {
+  t: 'wave-buff:resolved'
+  wave: number
+  buffId: string
+  /** 'agreement' = ambos votaron lo mismo. 'random-from-votes' = votos
+   *  divergentes, server picó uno al azar. 'autopick' = nadie votó a tiempo. */
+  reason: 'agreement' | 'random-from-votes' | 'autopick'
+}
+
+export type ServerMsg =
+  | LobbyMsg
+  | PhaseMsg
+  | StateMsg
+  | PeerLeftMsg
+  | ErrorMsg
+  | PingMsg
+  | WaveBuffOfferMsg
+  | WaveBuffVotesMsg
+  | WaveBuffResolvedMsg
 
 // ============================================================================
 // Helpers
