@@ -18,13 +18,19 @@
 import type { SaveCurrent } from '@stick/shared'
 import {
   type ClientMsg,
+  type EnemyDespawnMsg,
+  type EnemySpawnMsg,
   type ErrorMsg,
   type LobbyMsg,
   type NetCosmetics,
+  type NetEnemy,
   type NetLoadout,
+  type NetObstacle,
+  type ObstacleDespawnMsg,
+  type ObstacleSpawnMsg,
+  type RestartVotesMsg,
   type ServerMsg,
   type StateMsg,
-  type RestartVotesMsg,
   type WaveBuffEndMsg,
   type WaveBuffOfferMsg,
   type WaveBuffResolvedMsg,
@@ -34,6 +40,41 @@ import {
 } from '@stick/shared'
 
 import { getValidAccessToken } from '../platform/api'
+
+/**
+ * Métricas en vivo sobre el WS — leídas por `<TelemetryOverlay>` cuando se
+ * activa con `?debug=1`. Ring-buffer rolling para que ningún spike puntual
+ * arruine el p95 y todas las cifras se reseteen al reconnectarse.
+ */
+export interface NetTelemetry {
+  /** Tickrate efectivo recibido (server msgs/s rolling 2s). */
+  tickRateHz: number
+  /** Bytes promedio por segundo (rolling 2s). */
+  bytesPerSec: number
+  /** p95 parse time (JSON.parse) sobre los últimos 60 mensajes. */
+  parseP95Ms: number
+  /** Tamaño del último mensaje recibido. */
+  lastMsgBytes: number
+  /** Parse time del último mensaje. */
+  lastMsgParseMs: number
+  /** Versión del protocolo netcode declarada por este cliente. */
+  netcodeVersion: number
+}
+
+/** Versión del protocolo netcode que el cliente soporta hoy. Se manda en
+ *  cada handshake (`HostReq`/`JoinReq`/`RejoinReq`). El server detecta el
+ *  máximo común a todos los clientes en sala y emite acorde — permite
+ *  cliente viejo + cliente nuevo durante deploys parciales.
+ *
+ *    1 = legacy
+ *    2 = static/dynamic split (Spawn/Despawn msgs + entityCache local)
+ */
+export const CLIENT_NETCODE_VERSION = 2
+
+/** Window de medición rolling para tickrate y bytes/s (ms). */
+const TELEMETRY_WINDOW_MS = 2000
+/** Cuántos parse times mantener para p95. */
+const PARSE_SAMPLES = 60
 
 /**
  * Derive what we should send the server about how this client wants to look.
@@ -168,6 +209,29 @@ class NetClient {
   /** Last input we sent — used to coalesce duplicate emissions. */
   private lastSentInput: { dx: number; dy: number } = { dx: 0, dy: 0 }
 
+  // ---- Telemetry --------------------------------------------------------
+  /** Cada entrada: { ts, bytes }. Rolling window de TELEMETRY_WINDOW_MS. */
+  private telMsgs: Array<{ ts: number; bytes: number }> = []
+  /** Ring buffer de parse times (ms). */
+  private telParseTimes: number[] = []
+  private telParseIdx = 0
+  private telLastBytes = 0
+  private telLastParseMs = 0
+
+  // ---- Entity cache (netcode v2+) ---------------------------------------
+  /** Campos inmutables de cada enemy — populated por `EnemySpawnMsg` y
+   *  removed por `EnemyDespawnMsg`. El cliente los merge con los dinámicos
+   *  del state msg para reconstruir un `NetEnemy` full sin que el server
+   *  los retransmita cada tick. */
+  private enemySpawnCache = new Map<
+    string,
+    { typeId: string; maxHp: number; lastX: number; lastY: number }
+  >()
+  private obstacleSpawnCache = new Map<
+    string,
+    { type: 'barrel' | 'crate' | 'column'; x: number; y: number; r: number; hpMax: number }
+  >()
+
   /** Subscribe to snapshot changes. Returns an unsubscribe fn. */
   subscribe(fn: (s: RoomSnapshot) => void): () => void {
     this.listeners.add(fn)
@@ -197,6 +261,7 @@ class NetClient {
     return this.connectThen({
       t: 'host',
       name,
+      netcodeVersion: CLIENT_NETCODE_VERSION,
       ...(accessToken ? { accessToken } : {}),
       ...(cosmetics ? { cosmetics } : {}),
       ...(loadout ? { loadout } : {}),
@@ -215,6 +280,7 @@ class NetClient {
       t: 'join',
       name,
       code: code.toUpperCase(),
+      netcodeVersion: CLIENT_NETCODE_VERSION,
       ...(accessToken ? { accessToken } : {}),
       ...(cosmetics ? { cosmetics } : {}),
       ...(loadout ? { loadout } : {}),
@@ -307,6 +373,8 @@ class NetClient {
       // ignore
     }
     this.ws = null
+    this.enemySpawnCache.clear()
+    this.obstacleSpawnCache.clear()
     this.update({ ...initialSnapshot })
   }
 
@@ -350,7 +418,7 @@ class NetClient {
 
       ws.addEventListener('message', (ev) => {
         const text = typeof ev.data === 'string' ? ev.data : ''
-        const msg = parseMsg<ServerMsg>(text)
+        const msg = this.parseAndMeasure(text)
         if (!msg) return
         this.applyServerMsg(msg)
 
@@ -435,6 +503,7 @@ class NetClient {
             t: 'rejoin',
             code,
             sessionId,
+            netcodeVersion: CLIENT_NETCODE_VERSION,
             ...(accessToken ? { accessToken } : {}),
           }),
         )
@@ -442,7 +511,7 @@ class NetClient {
     })
     ws.addEventListener('message', (ev) => {
       const text = typeof ev.data === 'string' ? ev.data : ''
-      const msg = parseMsg<ServerMsg>(text)
+      const msg = this.parseAndMeasure(text)
       if (!msg) return
       this.applyServerMsg(msg)
       if (!settled) {
@@ -488,6 +557,12 @@ class NetClient {
           msg.phase === 'playing' ? 'playing' : msg.phase === 'gameover' ? 'gameover' : 'lobby'
         // Saliendo de gameover (post-restart) → tirá el summary y los votes.
         const leavingGameover = this.snap.phase === 'gameover' && nextPhase !== 'gameover'
+        // Volviendo a lobby = run nuevo arrancando — cache de spawns vieja
+        // ya no aplica. Server va a remandar spawns con el primer state msg.
+        if (nextPhase === 'lobby') {
+          this.enemySpawnCache.clear()
+          this.obstacleSpawnCache.clear()
+        }
         this.update({
           ...this.snap,
           phase: nextPhase,
@@ -506,7 +581,7 @@ class NetClient {
         return
       }
       case 'state':
-        this.update({ ...this.snap, state: msg })
+        this.update({ ...this.snap, state: this.reconstructStateMsg(msg) })
         return
       case 'peer-left': {
         const left = this.snap.players.find((p) => p.sessionId === msg.sessionId)
@@ -553,7 +628,113 @@ class NetClient {
       case 'restart:votes':
         this.applyRestartVotes(msg)
         return
+      case 'spawn:enemy':
+        this.applyEnemySpawn(msg)
+        return
+      case 'despawn:enemy':
+        this.applyEnemyDespawn(msg)
+        return
+      case 'spawn:obstacle':
+        this.applyObstacleSpawn(msg)
+        return
+      case 'despawn:obstacle':
+        this.applyObstacleDespawn(msg)
+        return
     }
+  }
+
+  /** Reconstruye un StateMsg "v1-shape" desde el wire que puede venir como
+   *  v2 (enemiesDynamic + cache) o v1 (enemies full). Centralizamos acá para
+   *  que el resto del código (NetArenaScene) consuma siempre `state.enemies`
+   *  y `state.obstacles` con full fields, transparente al netcode version. */
+  private reconstructStateMsg(msg: StateMsg): StateMsg {
+    if (!msg.enemiesDynamic && !msg.obstaclesDynamic) return msg // v1 puro
+
+    let enemies: NetEnemy[] | undefined
+    if (msg.enemiesDynamic) {
+      enemies = []
+      for (const d of msg.enemiesDynamic) {
+        const cached = this.enemySpawnCache.get(d.id)
+        if (!cached) {
+          // Spawn msg llegó después que el primer state (race posible).
+          // Saltamos este enemy en este tick — el próximo tick ya estará.
+          continue
+        }
+        const e: NetEnemy = {
+          id: d.id,
+          typeId: cached.typeId,
+          maxHp: cached.maxHp,
+          x: d.x,
+          y: d.y,
+          vx: d.vx,
+          vy: d.vy,
+          facingX: d.facingX,
+          facingY: d.facingY,
+          walkPhase: d.walkPhase,
+          attackKind: d.attackKind ?? '',
+          attackTimer: d.attackTimer,
+          attackDuration: 0.4,
+          hp: d.hp,
+          hurtFlash: d.hurtFlash,
+        }
+        if (d.attackDirX !== undefined) e.attackDirX = d.attackDirX
+        if (d.attackDirY !== undefined) e.attackDirY = d.attackDirY
+        enemies.push(e)
+        cached.lastX = d.x
+        cached.lastY = d.y
+      }
+    }
+
+    let obstacles: NetObstacle[] | undefined
+    if (msg.obstaclesDynamic) {
+      obstacles = []
+      for (const d of msg.obstaclesDynamic) {
+        const cached = this.obstacleSpawnCache.get(d.id)
+        if (!cached) continue
+        obstacles.push({
+          id: d.id,
+          type: cached.type,
+          x: cached.x,
+          y: cached.y,
+          r: cached.r,
+          hp: d.hp,
+          hpMax: cached.hpMax,
+          hitFlash: d.hitFlash,
+        })
+      }
+    }
+
+    const out: StateMsg = { ...msg }
+    if (enemies) out.enemies = enemies
+    if (obstacles) out.obstacles = obstacles
+    return out
+  }
+
+  private applyEnemySpawn(msg: EnemySpawnMsg): void {
+    this.enemySpawnCache.set(msg.id, {
+      typeId: msg.typeId,
+      maxHp: msg.maxHp,
+      lastX: msg.x,
+      lastY: msg.y,
+    })
+  }
+
+  private applyEnemyDespawn(msg: EnemyDespawnMsg): void {
+    this.enemySpawnCache.delete(msg.id)
+  }
+
+  private applyObstacleSpawn(msg: ObstacleSpawnMsg): void {
+    this.obstacleSpawnCache.set(msg.id, {
+      type: msg.type,
+      x: msg.x,
+      y: msg.y,
+      r: msg.r,
+      hpMax: msg.hpMax,
+    })
+  }
+
+  private applyObstacleDespawn(msg: ObstacleDespawnMsg): void {
+    this.obstacleSpawnCache.delete(msg.id)
   }
 
   private applyBuffOffer(msg: WaveBuffOfferMsg): void {
@@ -612,6 +793,55 @@ class NetClient {
   private update(next: RoomSnapshot): void {
     this.snap = next
     for (const fn of this.listeners) fn(next)
+  }
+
+  /** Parsea un msg + actualiza telemetría (bytes, parse time, msg counter).
+   *  Reemplaza `parseMsg` directo. Sin overhead notable: performance.now ×2
+   *  + push/shift de un array, costo de ~µs. */
+  private parseAndMeasure(text: string): ServerMsg | null {
+    const bytes = text.length
+    const t0 = performance.now()
+    const msg = parseMsg<ServerMsg>(text)
+    const dt = performance.now() - t0
+    this.telLastBytes = bytes
+    this.telLastParseMs = dt
+    const now = performance.now()
+    this.telMsgs.push({ ts: now, bytes })
+    // Trim entries fuera del window (rolling 2s).
+    const cutoff = now - TELEMETRY_WINDOW_MS
+    while (this.telMsgs.length > 0 && (this.telMsgs[0]?.ts ?? 0) < cutoff) {
+      this.telMsgs.shift()
+    }
+    // Ring buffer de parse times — pisamos el más viejo cuando llenamos.
+    if (this.telParseTimes.length < PARSE_SAMPLES) {
+      this.telParseTimes.push(dt)
+    } else {
+      this.telParseTimes[this.telParseIdx] = dt
+      this.telParseIdx = (this.telParseIdx + 1) % PARSE_SAMPLES
+    }
+    return msg
+  }
+
+  /** Snapshot de telemetría — leído por TelemetryOverlay cada 500ms. */
+  getTelemetry(): NetTelemetry {
+    const span = TELEMETRY_WINDOW_MS / 1000
+    const totalBytes = this.telMsgs.reduce((sum, m) => sum + m.bytes, 0)
+    const tickRateHz = this.telMsgs.length / span
+    const bytesPerSec = totalBytes / span
+    let parseP95Ms = 0
+    if (this.telParseTimes.length >= 5) {
+      const sorted = this.telParseTimes.slice().sort((a, b) => a - b)
+      const idx = Math.floor(sorted.length * 0.95)
+      parseP95Ms = sorted[Math.min(idx, sorted.length - 1)] ?? 0
+    }
+    return {
+      tickRateHz,
+      bytesPerSec,
+      parseP95Ms,
+      lastMsgBytes: this.telLastBytes,
+      lastMsgParseMs: this.telLastParseMs,
+      netcodeVersion: CLIENT_NETCODE_VERSION,
+    }
   }
 
   /** Mobile Safari + tabs en background matan WS al ratito. Cuando el user

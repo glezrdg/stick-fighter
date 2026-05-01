@@ -157,6 +157,7 @@ async function main() {
             parsed.data.name,
             parsed.data.cosmetics,
             parsed.data.loadout,
+            parsed.data.netcodeVersion,
           )
           sockets.set(ws, { room, client })
           return
@@ -186,6 +187,7 @@ async function main() {
             parsed.data.name,
             parsed.data.cosmetics,
             parsed.data.loadout,
+            parsed.data.netcodeVersion,
           )
           sockets.set(ws, { room, client })
           return
@@ -204,7 +206,7 @@ async function main() {
             sendError(ws, 'rejoin-failed', `no room with code ${parsed.data.code}`)
             return
           }
-          const client = room.rejoinClient(ws, parsed.data.sessionId)
+          const client = room.rejoinClient(ws, parsed.data.sessionId, parsed.data.netcodeVersion)
           if (!client) {
             sendError(ws, 'rejoin-failed', 'session expired or already connected')
             return

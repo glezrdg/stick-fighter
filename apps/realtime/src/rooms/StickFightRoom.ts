@@ -1,13 +1,19 @@
 import { attackPatterns, getEnemyType, getWaveBuff } from '@stick/content'
 import {
   type ClientMsg,
+  type EnemyDespawnMsg,
+  type EnemySpawnMsg,
   type LobbyMsg,
   type NetCosmetics,
   type NetEnemy,
+  type NetEnemyDynamic,
   type NetLoadout,
   type NetObstacle,
+  type NetObstacleDynamic,
   type NetPlayer,
   type NetProjectile,
+  type ObstacleDespawnMsg,
+  type ObstacleSpawnMsg,
   type PhaseMsg,
   type RestartVotesMsg,
   type ServerMsg,
@@ -156,7 +162,16 @@ export interface RoomClient {
    *  Bus compartido con el resto de la sala; los efectos (damage AOE, FX
    *  events) afectan al mundo común. */
   skills: SkillSystem
+  /** Versión netcode declarada por el cliente al hacer host/join/rejoin.
+   *  Default 1 si el cliente es viejo (no manda el campo). El server
+   *  computa `effectiveNetcodeVersion` como min(...) sobre todos y emite
+   *  acorde — permite cliente v1 + cliente v2 coexistir sin pelearse. */
+  netcodeVersion: number
 }
+
+/** Versión MAX que el server soporta hoy. Si crece, agrega cases en
+ *  `stateMsgFor`/`emitInitialSpawns`/etc. */
+const SERVER_MAX_NETCODE_VERSION = 2
 
 const SIM_TICK_HZ = 30
 const SIM_TICK_MS = 1000 / SIM_TICK_HZ
@@ -207,6 +222,25 @@ export class StickFightRoom {
    *  resetear o al transicionar phase fuera de gameover. */
   private restartVotes = new Set<string>()
 
+  /** Set de enemy IDs que ya fuimos diferenciados a clientes v2+. Cuando un
+   *  enemy nuevo aparece (no está en este set) emitimos spawn:enemy. Cuando
+   *  uno desaparece (estaba en el set y ya no en `getEnemies()`) emitimos
+   *  despawn:enemy. Reset al startRun() y restartRoom(). */
+  private knownEnemyIds = new Set<string>()
+  private knownObstacleIds = new Set<string>()
+
+  /** Telemetría rolling para debug de carga de red. Se emite por log cada
+   *  30s (`metricsLogInterval`) — bytes broadcasted/s + tick processing time.
+   *  Sin esto no podemos correlacionar perf de mobile con tamaño de wire. */
+  private metrics = {
+    bytesOutWindow: 0,
+    msgsOutWindow: 0,
+    windowStartedAt: Date.now(),
+    tickProcessTimes: [] as number[], // ring buffer max 100
+    tickProcessIdx: 0,
+  }
+  private metricsLogInterval: NodeJS.Timeout | null = null
+
   constructor(
     code: string,
     private readonly onDispose: (code: string) => void,
@@ -232,6 +266,7 @@ export class StickFightRoom {
     name: string,
     cosmetics?: NetCosmetics,
     loadout?: NetLoadout,
+    netcodeVersion?: number,
   ): RoomClient {
     const sessionId = `s${this.code}-${this.nextSessionSeq++}`
     const slot: 0 | 1 = this.clients.size === 0 ? 0 : 1
@@ -299,10 +334,11 @@ export class StickFightRoom {
       effectiveStats,
       runState,
       skills,
+      netcodeVersion: Math.min(netcodeVersion ?? 1, SERVER_MAX_NETCODE_VERSION),
     }
     this.clients.set(sessionId, client)
     console.info(
-      `[stick_fight] ${this.code}: ${sessionId} (${name}) joined — weapon=${effectiveLoadout.weaponId}#${effectiveLoadout.weaponLevel} skills=[${effectiveLoadout.equippedSkills.join(',')}] owned=[${effectiveLoadout.ownedSkills.join(',')}] cosmeticsSkin=${client.cosmetics.skin}`,
+      `[stick_fight] ${this.code}: ${sessionId} (${name}) joined — weapon=${effectiveLoadout.weaponId}#${effectiveLoadout.weaponLevel} skills=[${effectiveLoadout.equippedSkills.join(',')}] owned=[${effectiveLoadout.ownedSkills.join(',')}] cosmeticsSkin=${client.cosmetics.skin} netcode=v${client.netcodeVersion}`,
     )
 
     // Send lobby snapshot to the new client.
@@ -310,7 +346,54 @@ export class StickFightRoom {
     // Notify the others (peer joined → re-send fresh lobby snapshot).
     this.broadcastExcept(client.sessionId, this.lobbyMsg())
 
+    // Si la sala ya está en juego (rejoin tardío) y el cliente es v2+, hay
+    // que mandarle los spawn msgs de los enemies + obstacles vivos para que
+    // pueda poblar su entityCache y renderizar correctamente.
+    if (this.phase === 'playing' && client.netcodeVersion >= 2) {
+      this.sendInitialSpawns(client)
+    }
+
     return client
+  }
+
+  /** Versión común mínima entre los clientes activos. Determina qué shape
+   *  tendrá el StateMsg (`enemies` v1 vs `enemiesDynamic` v2). El min
+   *  garantiza que un cliente v1 nunca recibe campos que no entiende. */
+  private effectiveNetcodeVersion(): number {
+    let min = SERVER_MAX_NETCODE_VERSION
+    for (const c of this.clients.values()) {
+      if (c.netcodeVersion < min) min = c.netcodeVersion
+    }
+    return min
+  }
+
+  /** Envía spawn msgs para todos los enemies + obstacles activos.
+   *  Llamado al startRun (broadcast) y al rejoin de un cliente v2+ tardío. */
+  private sendInitialSpawns(client: RoomClient): void {
+    if (!this.waves) return
+    for (const e of this.waves.getEnemies() as Enemy[]) {
+      this.send(client.ws, {
+        t: 'spawn:enemy',
+        id: e.id,
+        typeId: e.typeId,
+        maxHp: e.maxHp,
+        x: e.x,
+        y: e.y,
+      } satisfies EnemySpawnMsg)
+    }
+    if (this.obstacles) {
+      for (const o of this.obstacles.getAll() as Obstacle[]) {
+        this.send(client.ws, {
+          t: 'spawn:obstacle',
+          id: o.id,
+          type: o.type,
+          x: o.x,
+          y: o.y,
+          r: o.r,
+          hpMax: o.hpMax,
+        } satisfies ObstacleSpawnMsg)
+      }
+    }
   }
 
   /** Apply an incoming message from a known client. */
@@ -406,16 +489,23 @@ export class StickFightRoom {
    * exitoso. Devuelve el client si OK, null si el sessionId no existe / ya
    * está conectado / código no matchea.
    */
-  rejoinClient(ws: WebSocket, sessionId: string): RoomClient | null {
+  rejoinClient(ws: WebSocket, sessionId: string, netcodeVersion?: number): RoomClient | null {
     const c = this.clients.get(sessionId)
     if (!c) return null
     if (c.ws !== null) return null // ya conectado, doble-rejoin no permitido
     c.ws = ws
     c.disconnectedAt = null
+    if (netcodeVersion !== undefined) {
+      c.netcodeVersion = Math.min(netcodeVersion, SERVER_MAX_NETCODE_VERSION)
+    }
     console.info(`[stick_fight] ${this.code}: ${sessionId} (${c.name}) rejoined`)
     // El cliente que reconectó necesita re-sincronizar UI: su lobbyMsg con
     // sessionId/slot scoped + el state actual (lo recibirá en el próximo tick).
     this.send(c.ws, this.lobbyMsgFor(c))
+    // Si cliente v2+ y la sala está en juego, mandar spawn msgs activos —
+    // así el cache local del cliente queda en sync y no flickea entities
+    // sin typeId hasta el próximo despawn natural.
+    if (this.phase === 'playing' && c.netcodeVersion >= 2) this.sendInitialSpawns(c)
     return c
   }
 
@@ -435,6 +525,11 @@ export class StickFightRoom {
     this.runStartedAt = Date.now()
     this.kills = 0
     this.gold = 0
+    // Limpio caches netcode v2 — el primer tick va a generar los spawn msgs
+    // para los enemies/obstacles iniciales (ObstacleSystem.generate() corre
+    // dentro del flow de bus.on('wave:start') más abajo).
+    this.knownEnemyIds.clear()
+    this.knownObstacleIds.clear()
 
     this.bus = createEventBus()
     this.rng = createRng(this.seed)
@@ -510,6 +605,40 @@ export class StickFightRoom {
     this.waves.startNextWave()
 
     this.tickHandle = setInterval(() => this.tickOnce(), SIM_TICK_MS)
+    // Metrics: log periódico cada 30s con bandwidth + tick perf por sala.
+    // Se limpia en restartRoom() y removeClient() (cuando vacía).
+    this.metricsLogInterval = setInterval(() => this.logRoomMetrics(), 30_000)
+  }
+
+  /** Imprime las métricas de la sala — bandwidth out, msg/s, tick perf p95.
+   *  Acumulamos sobre 30s para evitar spam y reducir noise. Reseteamos los
+   *  contadores después de cada print para mantener métricas "rolling". */
+  private logRoomMetrics(): void {
+    const now = Date.now()
+    const elapsedSec = (now - this.metrics.windowStartedAt) / 1000
+    if (elapsedSec < 1) return
+    const bytesPerSec = this.metrics.bytesOutWindow / elapsedSec
+    const msgsPerSec = this.metrics.msgsOutWindow / elapsedSec
+    const numClients = this.clients.size
+    const perClient = numClients > 0 ? bytesPerSec / numClients : 0
+
+    let tickAvg = 0
+    let tickP95 = 0
+    if (this.metrics.tickProcessTimes.length > 5) {
+      const sorted = this.metrics.tickProcessTimes.slice().sort((a, b) => a - b)
+      const sum = sorted.reduce((s, x) => s + x, 0)
+      tickAvg = sum / sorted.length
+      const idx = Math.floor(sorted.length * 0.95)
+      tickP95 = sorted[Math.min(idx, sorted.length - 1)] ?? 0
+    }
+
+    console.info(
+      `[metrics] ${this.code} clients=${numClients} bw=${(bytesPerSec / 1024).toFixed(1)}KB/s perClient=${(perClient / 1024).toFixed(1)}KB/s msg/s=${msgsPerSec.toFixed(1)} tick avg=${tickAvg.toFixed(2)}ms p95=${tickP95.toFixed(2)}ms`,
+    )
+
+    this.metrics.bytesOutWindow = 0
+    this.metrics.msgsOutWindow = 0
+    this.metrics.windowStartedAt = now
   }
 
   private tickOnce(): void {
@@ -520,7 +649,22 @@ export class StickFightRoom {
       // Sanity: skip ticks with absurd dt (server hiccup, tab thaw).
       return
     }
+    // Métricas: medimos cuánto tarda el tick. Si crece >SIM_TICK_MS estamos
+    // saturando. Lo reportamos en el log periódico de metricsTick.
+    const tickT0 = performance.now()
+    this.runTick(dt, now)
+    const tickDt = performance.now() - tickT0
+    if (this.metrics.tickProcessTimes.length < 100) {
+      this.metrics.tickProcessTimes.push(tickDt)
+    } else {
+      this.metrics.tickProcessTimes[this.metrics.tickProcessIdx] = tickDt
+      this.metrics.tickProcessIdx = (this.metrics.tickProcessIdx + 1) % 100
+    }
+  }
 
+  /** Body original del tick. Aislado para que `tickOnce` pueda medir su
+   *  duración sin que el throw afecte la métrica. */
+  private runTick(dt: number, now: number): void {
     // Reap zombies: clientes con WS cerrado por más del grace window.
     for (const c of Array.from(this.clients.values())) {
       if (c.disconnectedAt !== null && now - c.disconnectedAt > RECONNECT_GRACE_MS) {
@@ -663,7 +807,87 @@ export class StickFightRoom {
     if (this.phase !== 'playing') return
 
     this.tick++
+    // Antes del state msg: detectamos enemies/obstacles que aparecieron o
+    // desaparecieron en este tick y emitimos spawn/despawn msgs (solo a
+    // clientes v2+). Sin esto, los cosmetic fields (typeId, maxHp) que
+    // sacamos del state msg en v2 se pierden cuando la entity aparece.
+    this.diffAndEmitSpawnDespawn()
     this.broadcast(this.stateMsg())
+  }
+
+  /** Compara enemies/obstacles vivos vs los conocidos del tick anterior.
+   *  Emite `spawn:*` para los nuevos y `despawn:*` para los que se fueron.
+   *  Solo se mandan a clientes v2+ — los v1 los reciben full en cada state. */
+  private diffAndEmitSpawnDespawn(): void {
+    if (!this.waves) return
+    // Si la sala efectiva es v1 (algún cliente viejo), los enemies viajan
+    // full en el state msg — los spawn msgs son redundantes y los v2 aún
+    // tienen typeId/maxHp del state. Skip para no mandar tráfico extra.
+    if (this.effectiveNetcodeVersion() < 2) return
+    // ---- Enemies ----
+    const currentEnemyIds = new Set<string>()
+    const newEnemies: Enemy[] = []
+    for (const e of this.waves.getEnemies() as Enemy[]) {
+      currentEnemyIds.add(e.id)
+      if (!this.knownEnemyIds.has(e.id)) newEnemies.push(e)
+    }
+    const goneEnemyIds: string[] = []
+    for (const id of this.knownEnemyIds) {
+      if (!currentEnemyIds.has(id)) goneEnemyIds.push(id)
+    }
+
+    if (newEnemies.length > 0 || goneEnemyIds.length > 0) {
+      for (const c of this.clients.values()) {
+        if (c.netcodeVersion < 2) continue
+        for (const e of newEnemies) {
+          this.send(c.ws, {
+            t: 'spawn:enemy',
+            id: e.id,
+            typeId: e.typeId,
+            maxHp: e.maxHp,
+            x: e.x,
+            y: e.y,
+          } satisfies EnemySpawnMsg)
+        }
+        for (const id of goneEnemyIds) {
+          this.send(c.ws, { t: 'despawn:enemy', id } satisfies EnemyDespawnMsg)
+        }
+      }
+    }
+    this.knownEnemyIds = currentEnemyIds
+
+    // ---- Obstacles ----
+    if (!this.obstacles) return
+    const currentObstacleIds = new Set<string>()
+    const newObstacles: Obstacle[] = []
+    for (const o of this.obstacles.getAll() as Obstacle[]) {
+      currentObstacleIds.add(o.id)
+      if (!this.knownObstacleIds.has(o.id)) newObstacles.push(o)
+    }
+    const goneObstacleIds: string[] = []
+    for (const id of this.knownObstacleIds) {
+      if (!currentObstacleIds.has(id)) goneObstacleIds.push(id)
+    }
+    if (newObstacles.length > 0 || goneObstacleIds.length > 0) {
+      for (const c of this.clients.values()) {
+        if (c.netcodeVersion < 2) continue
+        for (const o of newObstacles) {
+          this.send(c.ws, {
+            t: 'spawn:obstacle',
+            id: o.id,
+            type: o.type,
+            x: o.x,
+            y: o.y,
+            r: o.r,
+            hpMax: o.hpMax,
+          } satisfies ObstacleSpawnMsg)
+        }
+        for (const id of goneObstacleIds) {
+          this.send(c.ws, { t: 'despawn:obstacle', id } satisfies ObstacleDespawnMsg)
+        }
+      }
+    }
+    this.knownObstacleIds = currentObstacleIds
   }
 
   /** Returns the first non-downed client (used by EnemySystem for AI target). */
@@ -865,9 +1089,15 @@ export class StickFightRoom {
     this.seed = 0
     this.pendingBuffPhase = null
     this.restartVotes.clear()
+    this.knownEnemyIds.clear()
+    this.knownObstacleIds.clear()
     if (this.tickHandle) {
       clearInterval(this.tickHandle)
       this.tickHandle = null
+    }
+    if (this.metricsLogInterval) {
+      clearInterval(this.metricsLogInterval)
+      this.metricsLogInterval = null
     }
     // Tear down sim systems — startRun los recrea con seed nuevo + bus limpio.
     this.bus = null
@@ -1083,6 +1313,10 @@ export class StickFightRoom {
         clearInterval(this.tickHandle)
         this.tickHandle = null
       }
+      if (this.metricsLogInterval) {
+        clearInterval(this.metricsLogInterval)
+        this.metricsLogInterval = null
+      }
       this.onDispose(this.code)
       return
     }
@@ -1167,44 +1401,77 @@ export class StickFightRoom {
       })
     }
 
+    // En v2+ usamos enemiesDynamic (sin typeId/maxHp/attackDuration — esos
+    // viven en el spawn msg cacheado por el cliente). En v1 mantenemos full
+    // para retrocompat. effectiveNetcodeVersion() = min(...) sobre clientes.
+    const ver = this.effectiveNetcodeVersion()
     const enemiesList: NetEnemy[] = []
+    const enemiesDynamicList: NetEnemyDynamic[] = []
     if (this.waves) {
       for (const e of this.waves.getEnemies() as Enemy[]) {
-        enemiesList.push({
-          id: e.id,
-          typeId: e.typeId,
-          x: e.x,
-          y: e.y,
-          vx: e.vx,
-          vy: e.vy,
-          facingX: e.facingX,
-          facingY: e.facingY,
-          walkPhase: e.walkPhase,
-          attackKind: e.attackKind ?? '',
-          attackTimer: e.attackTimer,
-          attackDuration: e.attackDuration,
-          attackDirX: e.attackDirX,
-          attackDirY: e.attackDirY,
-          hp: Math.max(0, Math.floor(e.hp)),
-          maxHp: e.maxHp,
-          hurtFlash: e.hurtFlash,
-        })
+        if (ver >= 2) {
+          enemiesDynamicList.push({
+            id: e.id,
+            x: e.x,
+            y: e.y,
+            vx: e.vx,
+            vy: e.vy,
+            facingX: e.facingX,
+            facingY: e.facingY,
+            walkPhase: e.walkPhase,
+            attackKind: e.attackKind ?? '',
+            attackTimer: e.attackTimer,
+            attackDirX: e.attackDirX,
+            attackDirY: e.attackDirY,
+            hp: Math.max(0, Math.floor(e.hp)),
+            hurtFlash: e.hurtFlash,
+          })
+        } else {
+          enemiesList.push({
+            id: e.id,
+            typeId: e.typeId,
+            x: e.x,
+            y: e.y,
+            vx: e.vx,
+            vy: e.vy,
+            facingX: e.facingX,
+            facingY: e.facingY,
+            walkPhase: e.walkPhase,
+            attackKind: e.attackKind ?? '',
+            attackTimer: e.attackTimer,
+            attackDuration: e.attackDuration,
+            attackDirX: e.attackDirX,
+            attackDirY: e.attackDirY,
+            hp: Math.max(0, Math.floor(e.hp)),
+            maxHp: e.maxHp,
+            hurtFlash: e.hurtFlash,
+          })
+        }
       }
     }
 
     const obstaclesList: NetObstacle[] = []
+    const obstaclesDynamicList: NetObstacleDynamic[] = []
     if (this.obstacles) {
       for (const o of this.obstacles.getAll() as Obstacle[]) {
-        obstaclesList.push({
-          id: o.id,
-          type: o.type,
-          x: o.x,
-          y: o.y,
-          r: o.r,
-          hp: Math.max(0, Math.floor(o.hp)),
-          hpMax: o.hpMax,
-          hitFlash: o.hitFlash,
-        })
+        if (ver >= 2) {
+          obstaclesDynamicList.push({
+            id: o.id,
+            hp: Math.max(0, Math.floor(o.hp)),
+            hitFlash: o.hitFlash,
+          })
+        } else {
+          obstaclesList.push({
+            id: o.id,
+            type: o.type,
+            x: o.x,
+            y: o.y,
+            r: o.r,
+            hp: Math.max(0, Math.floor(o.hp)),
+            hpMax: o.hpMax,
+            hitFlash: o.hitFlash,
+          })
+        }
       }
     }
 
@@ -1223,25 +1490,36 @@ export class StickFightRoom {
       }
     }
 
-    return {
+    const msg: StateMsg = {
       t: 'state',
       tick: this.tick,
       players,
-      enemies: enemiesList,
-      obstacles: obstaclesList,
       projectiles: projectilesList,
       wave: this.wave,
       alive: this.alive,
       total: this.total,
       gold: this.gold,
     }
+    if (ver >= 2) {
+      msg.enemiesDynamic = enemiesDynamicList
+      msg.obstaclesDynamic = obstaclesDynamicList
+    } else {
+      msg.enemies = enemiesList
+      msg.obstacles = obstaclesList
+    }
+    return msg
   }
 
   private send(ws: WebSocket | null, msg: ServerMsg): void {
     if (!ws) return // cliente en grace — no hay socket
     if (ws.readyState !== ws.OPEN) return
     try {
-      ws.send(encodeMsg(msg))
+      const wire = encodeMsg(msg)
+      ws.send(wire)
+      // Telemetry: contamos bytes salidos para reportar bandwidth real por
+      // cliente. Útil para validar reducciones cuando lleguen Fases 1-3.
+      this.metrics.bytesOutWindow += wire.length
+      this.metrics.msgsOutWindow++
     } catch (err) {
       console.error('[room] send failed:', err)
     }
@@ -1286,6 +1564,10 @@ export class StickFightRoom {
     if (this.tickHandle) {
       clearInterval(this.tickHandle)
       this.tickHandle = null
+    }
+    if (this.metricsLogInterval) {
+      clearInterval(this.metricsLogInterval)
+      this.metricsLogInterval = null
     }
   }
 }

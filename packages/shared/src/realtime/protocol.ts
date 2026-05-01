@@ -68,6 +68,16 @@ export const NetLoadoutSchema = z.object({
 })
 export type NetLoadout = z.infer<typeof NetLoadoutSchema>
 
+/** Versión del protocolo netcode soportada por el cliente. El server detecta
+ *  el min común a todos los clientes en sala y emite acorde, permitiendo que
+ *  un cliente viejo + uno nuevo coexistan durante un deploy parcial.
+ *
+ *    1 = legacy (StateMsg full, todos los campos cada tick)
+ *    2 = static/dynamic split (Spawn/Despawn msgs + StateMsg solo dinámicos)
+ *
+ * Más versiones se agregarán en Fases 2-4 (delta encoding, binary, interp). */
+export const NetcodeVersionSchema = z.number().int().min(1).max(99)
+
 /** Open a brand-new room. Server picks a fresh 4-letter lobby code. */
 export const HostReqSchema = z.object({
   t: z.literal('host'),
@@ -80,6 +90,8 @@ export const HostReqSchema = z.object({
   /** Skills owned + equipped + weapon level. Sin esto el server usa defaults
    *  (sin skills, weapon level 1) y el daño se siente igual al de un fresh save. */
   loadout: NetLoadoutSchema.optional(),
+  /** Versión netcode soportada. Default 1 si ausente (cliente viejo). */
+  netcodeVersion: NetcodeVersionSchema.optional(),
 })
 export type HostReq = z.infer<typeof HostReqSchema>
 
@@ -91,6 +103,7 @@ export const JoinReqSchema = z.object({
   accessToken: z.string().optional(),
   cosmetics: NetCosmeticsSchema.optional(),
   loadout: NetLoadoutSchema.optional(),
+  netcodeVersion: NetcodeVersionSchema.optional(),
 })
 export type JoinReq = z.infer<typeof JoinReqSchema>
 
@@ -151,6 +164,7 @@ export const RejoinReqSchema = z.object({
   code: z.string().regex(/^[A-Z2-9]{4}$/, '4-letter code'),
   sessionId: z.string().min(1).max(64),
   accessToken: z.string().optional(),
+  netcodeVersion: NetcodeVersionSchema.optional(),
 })
 export type RejoinReq = z.infer<typeof RejoinReqSchema>
 
@@ -203,16 +217,26 @@ export interface PhaseMsg {
 
 /** Full state snapshot. Sent every server tick (~30 Hz) while phase='playing'.
  *  Only carries renderable fields — anything not on this struct is owned
- *  exclusively by the server (combat resolution, damage, etc.). */
+ *  exclusively by the server (combat resolution, damage, etc.).
+ *
+ *  En netcode v1, `enemies`/`obstacles` llevan TODOS los campos. En v2 (con
+ *  static/dynamic split), llevan solo dinámicos vía `enemiesDynamic` y
+ *  `obstaclesDynamic`. Server elige el shape según min netcodeVersion en
+ *  sala. Cliente acepta ambos: si `enemiesDynamic` está presente, lo merge
+ *  contra el cache local de spawns; si `enemies` está presente, usa ese full. */
 export interface StateMsg {
   t: 'state'
   /** Server tick number (monotonic, for client-side smoothing/interp). */
   tick: number
   players: ReadonlyArray<NetPlayer>
-  enemies: ReadonlyArray<NetEnemy>
-  /** Static arena obstacles (barrels/crates/columns). Optional so old clients
-   *  still render — empty array means the room has none. */
+  /** v1: full enemies con typeId/maxHp/attackDuration. */
+  enemies?: ReadonlyArray<NetEnemy>
+  /** v2+: solo dinámicos. typeId/maxHp viven en EnemySpawnMsg cacheado. */
+  enemiesDynamic?: ReadonlyArray<NetEnemyDynamic>
+  /** v1: full obstacles con type/r/hpMax. */
   obstacles?: ReadonlyArray<NetObstacle>
+  /** v2+: solo hp/hitFlash. type/r/hpMax viven en ObstacleSpawnMsg. */
+  obstaclesDynamic?: ReadonlyArray<NetObstacleDynamic>
   /** Projectiles en vuelo (flechas del player + orbs/fireballs enemigos).
    *  Optional para retrocompat. */
   projectiles?: ReadonlyArray<NetProjectile>
@@ -340,6 +364,76 @@ export interface NetEnemy {
   hurtFlash: number
 }
 
+/** Mensaje "spawn" de un enemy — se manda UNA VEZ al aparecer. Lleva los
+ *  campos inmutables (typeId, maxHp) que en netcode v1 viajaban en cada
+ *  StateMsg. Cliente cachea esto y reconstruye el enemy completo en cada
+ *  tick mergeando con el `NetEnemyDynamic` del state. */
+export interface EnemySpawnMsg {
+  t: 'spawn:enemy'
+  id: string
+  typeId: string
+  maxHp: number
+  /** Posición inicial — el primer tick ya lo va a updatear pero el cliente
+   *  necesita algún valor para no flickear el render entre el spawn y el
+   *  primer state msg. */
+  x: number
+  y: number
+}
+
+/** Mensaje "despawn" — el server confirma que un enemy ya no existe.
+ *  Cliente quita del cache. Sin esto, después de que un enemy muere el
+ *  cliente lo seguiría renderizando con el último state cacheado. */
+export interface EnemyDespawnMsg {
+  t: 'despawn:enemy'
+  id: string
+}
+
+/** Mismo patrón para obstacles. Se mandan al inicio del run (cuando
+ *  ObstacleSystem.generate los crea) y se despawnean cuando se rompen. */
+export interface ObstacleSpawnMsg {
+  t: 'spawn:obstacle'
+  id: string
+  type: 'barrel' | 'crate' | 'column'
+  x: number
+  y: number
+  r: number
+  hpMax: number
+}
+
+export interface ObstacleDespawnMsg {
+  t: 'despawn:obstacle'
+  id: string
+}
+
+/** Versión "dinámica" del NetEnemy que viaja en cada tick desde netcode v2.
+ *  Excluye campos inmutables (`typeId`, `maxHp`, `attackDuration`) que el
+ *  cliente ya tiene del `EnemySpawnMsg`. Reduce ~50% el tamaño por enemy
+ *  vs `NetEnemy` v1. */
+export interface NetEnemyDynamic {
+  id: string
+  x: number
+  y: number
+  vx: number
+  vy: number
+  facingX: number
+  facingY: number
+  walkPhase: number
+  attackKind?: string
+  attackTimer: number
+  attackDirX?: number
+  attackDirY?: number
+  hp: number
+  hurtFlash: number
+}
+
+/** Versión "dinámica" del NetObstacle. Excluye `type`, `r`, `hpMax` (todo
+ *  inmutable). Solo viaja `hp` y `hitFlash` que cambian con damage. */
+export interface NetObstacleDynamic {
+  id: string
+  hp: number
+  hitFlash: number
+}
+
 /** A peer left (drop-out, network failure). The other player keeps going solo. */
 export interface PeerLeftMsg {
   t: 'peer-left'
@@ -449,6 +543,10 @@ export type ServerMsg =
   | WaveBuffResolvedMsg
   | WaveBuffEndMsg
   | RestartVotesMsg
+  | EnemySpawnMsg
+  | EnemyDespawnMsg
+  | ObstacleSpawnMsg
+  | ObstacleDespawnMsg
 
 // ============================================================================
 // Helpers

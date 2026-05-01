@@ -17,6 +17,7 @@ import { JoystickOverlay } from './ui/JoystickOverlay'
 import { MainMenuOverlay } from './ui/MainMenuOverlay'
 import { PauseMenu } from './ui/PauseMenu'
 import { ShopOverlay } from './ui/ShopOverlay'
+import { TelemetryOverlay } from './ui/TelemetryOverlay'
 import { TouchButtons } from './ui/TouchButtons'
 import { TutorialOverlay } from './ui/TutorialOverlay'
 import { WaveBuffCards } from './ui/WaveBuffCards'
@@ -31,6 +32,11 @@ declare global {
 async function main(): Promise<void> {
   // Phase 1: services that don't need the Phaser canvas (loads save).
   const partialServices = await bootstrapPreGame()
+
+  // Telemetry overlay: visible cuando ?debug=1 está en el query string.
+  // Útil para validar performance del netcode en mobile real.
+  const telemetryEnabled =
+    typeof location !== 'undefined' && new URLSearchParams(location.search).get('debug') === '1'
 
   // Mount the Solid HUD overlay (HUD + virtual joystick visual + shop + tutorial).
   const hudRoot = document.getElementById('hud-root')
@@ -62,6 +68,7 @@ async function main(): Promise<void> {
             saveStore={partialServices.saveStore}
           />
           <GameOverOverlay bus={partialServices.bus} getSave={() => partialServices.save} />
+          <TelemetryOverlay enabled={telemetryEnabled} />
         </>
       ),
       hudRoot,

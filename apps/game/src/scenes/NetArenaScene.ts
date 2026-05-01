@@ -309,9 +309,9 @@ export class NetArenaScene extends BaseScene {
 
     this.renderObstacles(state.obstacles ?? [])
     this.renderPlayers(state.players)
-    this.renderEnemies(state.enemies)
+    this.renderEnemies(state.enemies ?? [])
     this.renderProjectiles(state.projectiles ?? [])
-    this.reapStaleEnemies(state.enemies)
+    this.reapStaleEnemies(state.enemies ?? [])
     this.reapStalePlayers(state.players)
 
     // Tick + draw client-side particles (the only sim that runs locally).
@@ -455,8 +455,10 @@ export class NetArenaScene extends BaseScene {
     // local). Si no, asumimos peer. Heurística — se puede afinar si el
     // server envía attribution explícita en el futuro.
     const selfAttacking = !!me && me.attackTimer > 0
-    for (const e of state.enemies) {
-      const before = prev.enemies.find((q) => q.id === e.id)
+    const stateEnemies = state.enemies ?? []
+    const prevEnemies = prev.enemies ?? []
+    for (const e of stateEnemies) {
+      const before = prevEnemies.find((q) => q.id === e.id)
       if (!before) continue
       if (e.hp < before.hp) {
         const dmg = before.hp - e.hp
@@ -481,9 +483,9 @@ export class NetArenaScene extends BaseScene {
         }
       }
     }
-    const liveIds = new Set(state.enemies.map((e) => e.id))
-    const aliveCount = state.enemies.length
-    for (const before of prev.enemies) {
+    const liveIds = new Set(stateEnemies.map((e) => e.id))
+    const aliveCount = stateEnemies.length
+    for (const before of prevEnemies) {
       if (liveIds.has(before.id)) continue
       // Enemy gone → full SP-style death FX:
       //   - white flash + ring (DeathFxSystem)
