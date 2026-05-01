@@ -195,37 +195,36 @@ export class NetArenaScene extends BaseScene {
       const prevOffer = this.snap.waveBuffOffer
       const prevPhase = this.snap.phase
       this.snap = s
-      // Server says it's over (or we got error/disconnected) → bail.
-      if (s.phase === 'gameover' || s.phase === 'error' || s.phase === 'idle') {
-        // Solo procesamos el gameover una vez (transición prev→now).
-        if (s.phase === 'gameover' && prevPhase !== 'gameover') {
-          const sum = s.gameoverSummary
-          if (sum) {
-            this.bus.emit('run:end', {
-              wave: sum.wave,
-              kills: sum.kills,
-              gold: sum.gold,
-              reason: 'death',
-            })
-            this.persistMultiRun(sum).catch((err) =>
-              console.error('[net-arena] run submit failed:', err),
-            )
-          } else {
-            // Server no envió summary (cliente o server viejo) → fallback con stats locales.
-            this.bus.emit('run:end', {
-              wave: this.lastWave,
-              kills: 0,
-              gold: this.lastGold,
-              reason: 'death',
-            })
-          }
-          // Vamos a GameOverScene en lugar de saltar al menú directo. El
-          // GameOverOverlay ya escucha `run:end` y muestra wave/kills/gold.
-          this.scene.start('GameOver')
+      // Transición a gameover (una sola vez): submitear run + ir a GameOverScene.
+      if (s.phase === 'gameover' && prevPhase !== 'gameover') {
+        const sum = s.gameoverSummary
+        if (sum) {
+          this.bus.emit('run:end', {
+            wave: sum.wave,
+            kills: sum.kills,
+            gold: sum.gold,
+            reason: 'death',
+          })
+          this.persistMultiRun(sum).catch((err) =>
+            console.error('[net-arena] run submit failed:', err),
+          )
         } else {
-          // Error / idle: no hay run que mostrar, vamos al menú.
-          this.scene.start('MainMenu')
+          this.bus.emit('run:end', {
+            wave: this.lastWave,
+            kills: 0,
+            gold: this.lastGold,
+            reason: 'death',
+          })
         }
+        this.scene.start('GameOver')
+        return
+      }
+      // Phase ya es gameover y el listener corre por updates posteriores
+      // (ej. state msg que llegó tarde, votes, etc.) — no navegamos otra vez.
+      if (s.phase === 'gameover') return
+      // Error o idle: no hay run que mostrar, volvemos al menú.
+      if (s.phase === 'error' || s.phase === 'idle') {
+        this.scene.start('MainMenu')
         return
       }
       // Translate net offer transitions into local-bus events that the

@@ -656,6 +656,12 @@ export class StickFightRoom {
     // going until either the revival happens or the survivor also falls.
     this.checkGameOver()
 
+    // Si checkGameOver flipeó a gameover, NO mandamos un state msg adicional.
+    // El cliente ya recibió el phase=gameover y está navegando a la
+    // GameOverScene; un state msg extra hace que el listener vea phase
+    // todavía 'gameover' con prev='gameover' y se vaya al menú por error.
+    if (this.phase !== 'playing') return
+
     this.tick++
     this.broadcast(this.stateMsg())
   }
