@@ -118,7 +118,7 @@ async function main() {
           }
           if (!authIfPresent(parsed.data.accessToken, ws)) return
           const room = createRoom()
-          const client = room.addClient(ws, parsed.data.name)
+          const client = room.addClient(ws, parsed.data.name, parsed.data.cosmetics)
           sockets.set(ws, { room, client })
           return
         }
@@ -142,7 +142,7 @@ async function main() {
             sendError(ws, 'lobby-full', 'lobby has 2 players already')
             return
           }
-          const client = room.addClient(ws, parsed.data.name)
+          const client = room.addClient(ws, parsed.data.name, parsed.data.cosmetics)
           sockets.set(ws, { room, client })
           return
         }

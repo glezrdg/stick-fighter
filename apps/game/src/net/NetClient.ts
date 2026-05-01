@@ -15,10 +15,12 @@
  * re-connecting is the user's job (close the lobby, open it again).
  */
 
+import type { SaveCurrent } from '@stick/shared'
 import {
   type ClientMsg,
   type ErrorMsg,
   type LobbyMsg,
+  type NetCosmetics,
   type ServerMsg,
   type StateMsg,
   encodeMsg,
@@ -26,6 +28,21 @@ import {
 } from '@stick/shared'
 
 import { AuthStore } from '../platform/authStore'
+
+/**
+ * Derive what we should send the server about how this client wants to look.
+ * Pulled from the equipped slots in `save.cosmetics` + the equipped weapon's
+ * level. The server retransmits these verbatim — see protocol `NetCosmetics`.
+ */
+export function cosmeticsFromSave(save: SaveCurrent): NetCosmetics {
+  const weaponId = save.cosmetics.sword.equipped
+  return {
+    skin: save.cosmetics.char.equipped,
+    weapon: weaponId,
+    weaponLevel: save.weaponLevels[weaponId] ?? 1,
+    aura: save.cosmetics.aura.equipped,
+  }
+}
 
 function resolveWsUrl(): string | null {
   const explicit = (import.meta.env?.VITE_REALTIME_URL as string | undefined)?.trim()
@@ -106,17 +123,27 @@ class NetClient {
 
   /** Open a new room. Resolves to the snapshot after the server's lobby ack,
    *  or null on failure (no URL configured / connection refused / server error). */
-  async hostRoom(name: string): Promise<RoomSnapshot | null> {
-    return this.connectThen({ t: 'host', name, accessToken: this.token() })
+  async hostRoom(name: string, cosmetics?: NetCosmetics): Promise<RoomSnapshot | null> {
+    return this.connectThen({
+      t: 'host',
+      name,
+      accessToken: this.token(),
+      ...(cosmetics ? { cosmetics } : {}),
+    })
   }
 
   /** Join an existing room by 4-letter code. */
-  async joinRoom(name: string, code: string): Promise<RoomSnapshot | null> {
+  async joinRoom(
+    name: string,
+    code: string,
+    cosmetics?: NetCosmetics,
+  ): Promise<RoomSnapshot | null> {
     return this.connectThen({
       t: 'join',
       name,
       code: code.toUpperCase(),
       accessToken: this.token(),
+      ...(cosmetics ? { cosmetics } : {}),
     })
   }
 

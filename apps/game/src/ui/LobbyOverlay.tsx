@@ -2,7 +2,7 @@ import type { SaveCurrent } from '@stick/shared'
 import { type EventBus } from '@stick/sim'
 import { type Component, Show, createEffect, createSignal, onCleanup } from 'solid-js'
 
-import { netClient, type RoomSnapshot } from '../net/NetClient'
+import { cosmeticsFromSave, netClient, type RoomSnapshot } from '../net/NetClient'
 import { AuthStore } from '../platform/authStore'
 
 interface LobbyOverlayProps {
@@ -67,7 +67,7 @@ export const LobbyOverlay: Component<LobbyOverlayProps> = (props) => {
     setError(null)
     setBusy(true)
     try {
-      const result = await netClient.hostRoom(playerName())
+      const result = await netClient.hostRoom(playerName(), cosmeticsFromSave(props.getSave()))
       if (!result || result.phase === 'error') {
         setError(result?.error?.msg ?? 'no se pudo crear la sala — ¿servidor offline?')
         return
@@ -86,7 +86,11 @@ export const LobbyOverlay: Component<LobbyOverlayProps> = (props) => {
     }
     setBusy(true)
     try {
-      const result = await netClient.joinRoom(playerName(), code().trim())
+      const result = await netClient.joinRoom(
+        playerName(),
+        code().trim(),
+        cosmeticsFromSave(props.getSave()),
+      )
       if (!result || result.phase === 'error') {
         setError(result?.error?.msg ?? 'código inválido o sala llena')
         return

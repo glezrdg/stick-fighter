@@ -45,6 +45,7 @@ export {
 export {
   HostReqSchema,
   JoinReqSchema,
+  NetCosmeticsSchema,
   encodeMsg,
   parseMsg,
   type ClientMsg,
@@ -54,6 +55,7 @@ export {
   type JoinReq,
   type LeaveReq,
   type LobbyMsg,
+  type NetCosmetics,
   type NetEnemy,
   type NetPlayer,
   type PeerLeftMsg,

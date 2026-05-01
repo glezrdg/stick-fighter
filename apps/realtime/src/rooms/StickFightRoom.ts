@@ -2,6 +2,7 @@ import { attackPatterns } from '@stick/content'
 import {
   type ClientMsg,
   type LobbyMsg,
+  type NetCosmetics,
   type NetEnemy,
   type NetPlayer,
   type PhaseMsg,
@@ -40,12 +41,25 @@ import type { WebSocket } from 'ws'
  * no codec to break (the lesson from the Colyseus attempts).
  */
 
+/** Server-side default for clients that don't declare cosmetics at handshake. */
+const DEFAULT_COSMETICS: NetCosmetics = {
+  skin: 'default',
+  weapon: 'katana',
+  weaponLevel: 1,
+  aura: 'yellow',
+}
+
 export interface RoomClient {
   ws: WebSocket
   sessionId: string
   name: string
   slot: 0 | 1
   ready: boolean
+  /** What this player wants to look like — sent at handshake, retransmitted
+   *  every tick in NetPlayer. Server treats it as opaque cosmetic data; the
+   *  renderer on each client maps these ids to colors/shapes via
+   *  `@stick/content`. */
+  cosmetics: NetCosmetics
   /** Last input received from this client. Server samples it each tick. */
   input: { dx: number; dy: number; attack: boolean; shoot: boolean; skill: 0 | 1 | null }
   /** Authoritative sim entity (mirrors `sessionId`). */
@@ -108,7 +122,7 @@ export class StickFightRoom {
    * Add a freshly-connected client. Caller has already validated the
    * lobby code + capacity. Sends the lobby msg back over `ws`.
    */
-  addClient(ws: WebSocket, name: string): RoomClient {
+  addClient(ws: WebSocket, name: string, cosmetics?: NetCosmetics): RoomClient {
     const sessionId = `s${this.code}-${this.nextSessionSeq++}`
     const slot: 0 | 1 = this.clients.size === 0 ? 0 : 1
     const spawnX = slot === 0 ? ARENA.width / 2 - 60 : ARENA.width / 2 + 60
@@ -130,6 +144,7 @@ export class StickFightRoom {
       name,
       slot,
       ready: false,
+      cosmetics: cosmetics ?? DEFAULT_COSMETICS,
       input: { dx: 0, dy: 0, attack: false, shoot: false, skill: null },
       sim,
       combat,
@@ -351,6 +366,7 @@ export class StickFightRoom {
         attackDirY: c.sim.attackDirY,
         hp: Math.max(0, Math.floor(c.sim.hp)),
         maxHp: c.sim.maxHp,
+        cosmetics: c.cosmetics,
       })
     }
 

@@ -24,6 +24,25 @@ import { z } from 'zod'
 // Client → Server
 // ============================================================================
 
+/**
+ * What each player wants to look like in the room. The client reads its own
+ * `save.cosmetics` + equipped weapon and ships them at handshake. The server
+ * doesn't validate against the catalog (yet) — if a client lies, the
+ * renderer's `getSkin`/`getWeapon` will throw and the client falls back to
+ * defaults. This is co-op among friends, not a competitive ladder.
+ */
+export const NetCosmeticsSchema = z.object({
+  /** Skin id from `@stick/content/skins.json`. */
+  skin: z.string().min(1).max(40),
+  /** Weapon id from `@stick/content/weapons.json`. */
+  weapon: z.string().min(1).max(40),
+  /** Weapon level (cosmetic-only on the wire; server derives stats locally). */
+  weaponLevel: z.number().int().min(1).max(20),
+  /** Aura id (player's outline/glow color). */
+  aura: z.string().min(1).max(40),
+})
+export type NetCosmetics = z.infer<typeof NetCosmeticsSchema>
+
 /** Open a brand-new room. Server picks a fresh 4-letter lobby code. */
 export const HostReqSchema = z.object({
   t: z.literal('host'),
@@ -31,6 +50,8 @@ export const HostReqSchema = z.object({
   name: z.string().trim().min(1).max(20),
   /** Optional JWT from `/auth/login`. If valid, room caches `userId`. */
   accessToken: z.string().optional(),
+  /** What this player wants to look like. Falls back to defaults if absent. */
+  cosmetics: NetCosmeticsSchema.optional(),
 })
 export type HostReq = z.infer<typeof HostReqSchema>
 
@@ -40,6 +61,7 @@ export const JoinReqSchema = z.object({
   code: z.string().regex(/^[A-Z2-9]{4}$/, '4-letter code'),
   name: z.string().trim().min(1).max(20),
   accessToken: z.string().optional(),
+  cosmetics: NetCosmeticsSchema.optional(),
 })
 export type JoinReq = z.infer<typeof JoinReqSchema>
 
@@ -134,6 +156,9 @@ export interface NetPlayer {
   attackDirY: number
   hp: number
   maxHp: number
+  /** What the client wants to look like — set at handshake, retransmitted by
+   *  the server every tick. Optional so old clients still render (default). */
+  cosmetics?: NetCosmetics
 }
 
 export interface NetEnemy {

@@ -1,5 +1,5 @@
-import type { AttackKind } from '@stick/content'
-import type { NetEnemy, NetPlayer, StateMsg } from '@stick/shared'
+import { type AttackKind, getAura, getSkin, getWeapon } from '@stick/content'
+import type { NetCosmetics, NetEnemy, NetPlayer, StateMsg } from '@stick/shared'
 import { ARENA, CAM_ZOOM } from '@stick/sim'
 
 import { netClient, type RoomSnapshot } from '../net/NetClient'
@@ -271,7 +271,7 @@ export class NetArenaScene extends BaseScene {
         peer.setPosition(p.x, p.y)
         g = peer
       }
-      this.stickman.draw(g, this.toRenderable(p, isSelf ? 0x000000 : 0x335533))
+      this.stickman.draw(g, this.toRenderable(p))
       this.updatePlayerOverlay(p, isSelf)
     }
   }
@@ -394,7 +394,8 @@ export class NetArenaScene extends BaseScene {
     }
   }
 
-  private toRenderable(p: NetPlayer, color: number): StickmanRenderState {
+  private toRenderable(p: NetPlayer): StickmanRenderState {
+    const visual = resolveCosmetics(p.cosmetics)
     return {
       vx: p.vx,
       vy: p.vy,
@@ -408,7 +409,11 @@ export class NetArenaScene extends BaseScene {
       attackDirY: p.attackDirY,
       hurtFlash: 0,
       iframes: 0,
-      color,
+      color: visual.color,
+      clothing: visual.clothing,
+      ...(visual.clothingColor !== undefined ? { clothingColor: visual.clothingColor } : {}),
+      accessory: visual.accessory,
+      ...(visual.weapon ? { weapon: visual.weapon } : {}),
     }
   }
 
@@ -448,4 +453,61 @@ function enemyColorOf(typeId: string): number {
   let hash = 0
   for (const c of typeId) hash = (hash * 31 + c.charCodeAt(0)) | 0
   return 0x202020 + (Math.abs(hash) & 0x3f3f3f)
+}
+
+function hexToNum(hex: string): number {
+  return parseInt(hex.slice(1), 16)
+}
+
+interface ResolvedCosmetics {
+  color: number
+  clothing: ReturnType<typeof getSkin>['clothing']
+  clothingColor: number | undefined
+  accessory: ReturnType<typeof getSkin>['accessory']
+  weapon: { shape: ReturnType<typeof getWeapon>['shape']; blade: number } | undefined
+}
+
+const FALLBACK_COSMETICS: ResolvedCosmetics = {
+  color: 0x000000,
+  clothing: 'tunic',
+  clothingColor: undefined,
+  accessory: 'none',
+  weapon: undefined,
+}
+
+/**
+ * Map the wire-cosmetics ids to renderable values via `@stick/content`.
+ * Mirrors `ArenaScene.refreshCosmetics()` but operates on the per-tick
+ * NetPlayer.cosmetics. Falls back to defaults on bad ids so a malicious or
+ * out-of-date client can't break the renderer for everyone.
+ *
+ * Note: `aura` color isn't consumed by StickmanRenderer (it's drawn in a
+ * separate aura graphic in SP). When we wire the aura overlay in NetArena
+ * we'll thread it through here too.
+ */
+function resolveCosmetics(c: NetCosmetics | undefined): ResolvedCosmetics {
+  if (!c) return FALLBACK_COSMETICS
+  let color = FALLBACK_COSMETICS.color
+  let clothing = FALLBACK_COSMETICS.clothing
+  let clothingColor: number | undefined
+  let accessory = FALLBACK_COSMETICS.accessory
+  let weapon: ResolvedCosmetics['weapon']
+  try {
+    const skin = getSkin(c.skin)
+    color = hexToNum(skin.color)
+    clothing = skin.clothing
+    clothingColor = skin.clothingColor ? hexToNum(skin.clothingColor) : undefined
+    accessory = skin.accessory
+  } catch {
+    /* fall through to defaults */
+  }
+  try {
+    const w = getWeapon(c.weapon)
+    weapon = { shape: w.shape, blade: hexToNum(w.blade) }
+  } catch {
+    /* no weapon drawn */
+  }
+  // Touch the import so eslint doesn't bark when the aura plumbing lands.
+  void getAura
+  return { color, clothing, clothingColor, accessory, weapon }
 }
