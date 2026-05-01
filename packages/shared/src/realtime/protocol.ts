@@ -132,10 +132,24 @@ export interface StateMsg {
   tick: number
   players: ReadonlyArray<NetPlayer>
   enemies: ReadonlyArray<NetEnemy>
+  /** Static arena obstacles (barrels/crates/columns). Optional so old clients
+   *  still render — empty array means the room has none. */
+  obstacles?: ReadonlyArray<NetObstacle>
   wave: number
   alive: number
   total: number
   gold: number
+}
+
+export interface NetObstacle {
+  id: string
+  type: 'barrel' | 'crate' | 'column'
+  x: number
+  y: number
+  r: number
+  hp: number
+  hpMax: number
+  hitFlash: number
 }
 
 export interface NetPlayer {

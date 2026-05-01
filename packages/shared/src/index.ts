@@ -57,6 +57,7 @@ export {
   type LobbyMsg,
   type NetCosmetics,
   type NetEnemy,
+  type NetObstacle,
   type NetPlayer,
   type PeerLeftMsg,
   type PhaseMsg,

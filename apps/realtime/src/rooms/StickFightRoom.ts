@@ -4,6 +4,7 @@ import {
   type LobbyMsg,
   type NetCosmetics,
   type NetEnemy,
+  type NetObstacle,
   type NetPlayer,
   type PhaseMsg,
   type ServerMsg,
@@ -16,6 +17,8 @@ import {
   type Enemy,
   EnemySystem,
   type EventBus as SimBus,
+  type Obstacle,
+  ObstacleSystem,
   type Player,
   ProjectileSystem,
   type Rng,
@@ -106,6 +109,7 @@ export class StickFightRoom {
   private waves: WaveSystem | null = null
   private enemies: EnemySystem | null = null
   private projectiles: ProjectileSystem | null = null
+  private obstacles: ObstacleSystem | null = null
 
   /** setInterval handle for the sim tick. */
   private tickHandle: NodeJS.Timeout | null = null
@@ -245,6 +249,8 @@ export class StickFightRoom {
       projectiles: this.projectiles,
     })
     this.waves = new WaveSystem({ bus: this.bus, rng: this.rng })
+    this.obstacles = new ObstacleSystem({ bus: this.bus, rng: this.rng })
+    this.obstacles.generate()
 
     // Mirror sim events into broadcast counters.
     this.bus.on('wave:start', ({ wave, totalEnemies }) => {
@@ -337,6 +343,17 @@ export class StickFightRoom {
       this.projectiles.update(target.sim, dt)
       this.waves.update(dt)
       this.waves.reapDead()
+      // Obstacles: hit-flash decay + AOE on death (handled inside .update).
+      // Then push every actor out of obstacles via collision response.
+      if (this.obstacles) {
+        this.obstacles.update(dt)
+        for (const c of this.clients.values()) {
+          if (!c.downed) this.obstacles.applyPlayerCollision(c.sim)
+        }
+        for (const e of enemiesList) {
+          this.obstacles.applyCollision(e, 16)
+        }
+      }
     }
 
     // Watchdog: end the run if everyone is downed, or if the downed peer's
@@ -506,11 +523,28 @@ export class StickFightRoom {
       }
     }
 
+    const obstaclesList: NetObstacle[] = []
+    if (this.obstacles) {
+      for (const o of this.obstacles.getAll() as Obstacle[]) {
+        obstaclesList.push({
+          id: o.id,
+          type: o.type,
+          x: o.x,
+          y: o.y,
+          r: o.r,
+          hp: Math.max(0, Math.floor(o.hp)),
+          hpMax: o.hpMax,
+          hitFlash: o.hitFlash,
+        })
+      }
+    }
+
     return {
       t: 'state',
       tick: this.tick,
       players,
       enemies: enemiesList,
+      obstacles: obstaclesList,
       wave: this.wave,
       alive: this.alive,
       total: this.total,

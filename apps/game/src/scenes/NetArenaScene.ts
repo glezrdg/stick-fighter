@@ -1,11 +1,16 @@
-import { type AttackKind, getAura, getSkin, getWeapon } from '@stick/content'
-import type { NetCosmetics, NetEnemy, NetPlayer, StateMsg } from '@stick/shared'
-import { ARENA, CAM_ZOOM } from '@stick/sim'
+import { type AttackKind, getAura, getEnemyType, getSkin, getWeapon } from '@stick/content'
+import type { NetCosmetics, NetEnemy, NetObstacle, NetPlayer, StateMsg } from '@stick/shared'
+import { ARENA, CAM_ZOOM, type Obstacle } from '@stick/sim'
 
 import { netClient, type RoomSnapshot } from '../net/NetClient'
 import { type ArenaProps, ArenaPropsRenderer } from '../render/ArenaPropsRenderer'
+import { DeathFxRenderer } from '../render/DeathFxRenderer'
+import { GoreRenderer } from '../render/GoreRenderer'
+import { ObstacleRenderer } from '../render/ObstacleRenderer'
 import { ParticleRenderer } from '../render/ParticleRenderer'
 import { StickmanRenderer, type StickmanRenderState } from '../render/StickmanRenderer'
+import { DeathFxSystem } from '../systems/DeathFxSystem'
+import { GoreSystem } from '../systems/GoreSystem'
 import { ParticleSystem } from '../systems/ParticleSystem'
 
 import { BaseScene } from './BaseScene'
@@ -56,12 +61,22 @@ export class NetArenaScene extends BaseScene {
   private particleGraphics!: Phaser.GameObjects.Graphics
   private arenaPropsGraphics!: Phaser.GameObjects.Graphics
   private arenaProps!: ArenaProps
+  /** Floor-level gore (blood pools, corpses). Drawn below actors. */
+  private goreFloorGraphics!: Phaser.GameObjects.Graphics
+  /** Mid-air gore (dismembered body parts). Drawn above actors briefly. */
+  private gorePartsGraphics!: Phaser.GameObjects.Graphics
+  /** Death white-flash + ring above where the enemy died. */
+  private deathFxGraphics!: Phaser.GameObjects.Graphics
+  /** Static arena obstacles (barrels/crates/columns). */
+  private obstacleGraphics!: Phaser.GameObjects.Graphics
 
   private playerOverlays = new Map<string, ActorOverlay>()
   private enemyOverlays = new Map<string, ActorOverlay>()
 
   private stickman!: StickmanRenderer
   private particles!: ParticleSystem
+  private gore!: GoreSystem
+  private deathFx!: DeathFxSystem
 
   private busUnsubs: Array<() => void> = []
   private netUnsub: (() => void) | null = null
@@ -73,6 +88,9 @@ export class NetArenaScene extends BaseScene {
   private lastGold = -1
   private lastAlive = -1
   private lastTotal = -1
+
+  // Game-feel timers (cosmetic only, never sync'd to server).
+  private cameraShake = 0
 
   // Edge buffers for the next sendInput() call.
   private pendingAttack = false
@@ -93,6 +111,8 @@ export class NetArenaScene extends BaseScene {
 
     this.stickman = new StickmanRenderer()
     this.particles = new ParticleSystem({ rng: this.rng })
+    this.gore = new GoreSystem({ rng: this.rng })
+    this.deathFx = new DeathFxSystem()
 
     // Industrial floor + grid + lamps + fans + dust — same as SP. Drawn first
     // so everything else (actors, fx, HUD overlays) sits on top.
@@ -103,10 +123,24 @@ export class NetArenaScene extends BaseScene {
     this.arenaPropsGraphics = this.add.graphics()
     this.arenaPropsGraphics.setDepth(-100)
 
+    // Gore floor sits above arena props but below actors. Body parts above
+    // actors briefly so they don't get hidden by the stickmen.
+    this.goreFloorGraphics = this.add.graphics()
+    this.goreFloorGraphics.setDepth(-50)
+    this.gorePartsGraphics = this.add.graphics()
+    this.gorePartsGraphics.setDepth(990)
+
+    // Obstacles drawn between gore floor and actors so destructibles read as
+    // arena props but the actor silhouettes stay on top.
+    this.obstacleGraphics = this.add.graphics()
+    this.obstacleGraphics.setDepth(800)
+
     this.playerGraphics = this.add.graphics()
     this.playerGraphics.setDepth(1000)
     this.particleGraphics = this.add.graphics()
     this.particleGraphics.setDepth(950)
+    this.deathFxGraphics = this.add.graphics()
+    this.deathFxGraphics.setDepth(1020)
 
     // Edge inputs from the local InputController → buffered, sent on next frame.
     this.busUnsubs.push(this.bus.on('input:attack', () => (this.pendingAttack = true)))
@@ -174,6 +208,21 @@ export class NetArenaScene extends BaseScene {
     this.arenaPropsGraphics.clear()
     ArenaPropsRenderer.drawFloor(this.arenaPropsGraphics, this.arenaProps)
 
+    // Tick + draw gore (corpses, parts, blood pools) before the live actors.
+    this.gore.update(dt)
+    this.goreFloorGraphics.clear()
+    this.gorePartsGraphics.clear()
+    for (const pool of this.gore.getBloodPools()) {
+      GoreRenderer.drawBloodPool(this.goreFloorGraphics, pool)
+    }
+    for (const corpse of this.gore.getCorpses()) {
+      GoreRenderer.drawCorpse(this.goreFloorGraphics, corpse)
+    }
+    for (const bp of this.gore.getBodyParts()) {
+      GoreRenderer.drawBodyPart(this.gorePartsGraphics, bp)
+    }
+
+    this.renderObstacles(state.obstacles ?? [])
     this.renderPlayers(state.players)
     this.renderEnemies(state.enemies)
     this.reapStaleEnemies(state.enemies)
@@ -184,11 +233,24 @@ export class NetArenaScene extends BaseScene {
     this.particleGraphics.clear()
     ParticleRenderer.draw(this.particleGraphics, this.particles.getAll())
 
+    // Death FX (white flash + ring) on top of everything.
+    this.deathFx.update(dt)
+    this.deathFxGraphics.clear()
+    DeathFxRenderer.draw(this.deathFxGraphics, this.deathFx.getAll())
+
     this.prevState = state
 
     // Camera follows the local player (or first player if we got booted).
     const me = state.players.find((p) => p.sessionId === this.snap.sessionId) ?? state.players[0]
     if (me) this.cameras.main.centerOn(me.x, me.y)
+
+    // Apply + decay the local cameraShake. Phaser's shake() doesn't stack,
+    // so we re-arm it as long as we have time left.
+    if (this.cameraShake > 0) {
+      const intensity = 0.005 * Math.min(1, this.cameraShake / 0.5)
+      this.cameras.main.shake(50, intensity)
+      this.cameraShake = Math.max(0, this.cameraShake - dt)
+    }
   }
 
   // ----------------------------------------------------------------- diff fx
@@ -235,6 +297,10 @@ export class NetArenaScene extends BaseScene {
         const dmg = before.hp - p.hp
         this.particles.spawnBlood(p.x, p.y - 18, -p.facingX, -p.facingY)
         this.spawnDamagePopup(p.x, p.y - 38, dmg, false)
+        // Local player took a hit → shake the camera so the impact reads.
+        if (p.sessionId === this.snap.sessionId) {
+          this.cameraShake = Math.max(this.cameraShake, 0.18 + Math.min(0.25, dmg / 100))
+        }
       }
     }
     // Enemies: HP down → slash + popup; disappeared → blood burst.
@@ -248,12 +314,36 @@ export class NetArenaScene extends BaseScene {
       }
     }
     const liveIds = new Set(state.enemies.map((e) => e.id))
+    const aliveCount = state.enemies.length
     for (const before of prev.enemies) {
-      if (!liveIds.has(before.id)) {
-        // Enemy gone → blood burst at the last-seen position.
-        this.particles.spawnBlood(before.x, before.y - 18, 0, -1, 22)
-        this.particles.spawnShockwave(before.x, before.y - 18, 0xa00000, 16)
+      if (liveIds.has(before.id)) continue
+      // Enemy gone → full SP-style death FX:
+      //   - white flash + ring (DeathFxSystem)
+      //   - blood pool + flying body parts (GoreSystem)
+      //   - blood splatter particles for instant impact (ParticleSystem)
+      let scale = 1
+      let color = 0xa00000
+      try {
+        const type = getEnemyType(before.typeId)
+        scale = type.scale ?? 1
+        // Use the enemy's content color so corpses match the live skin.
+        color = parseInt(type.color.slice(1), 16)
+      } catch {
+        // Unknown typeId — use defaults.
       }
+      this.deathFx.add({ x: before.x, y: before.y, scale })
+      this.gore.addKill({
+        x: before.x,
+        y: before.y,
+        color,
+        scale,
+        knockbackX: before.vx,
+        knockbackY: before.vy,
+        aliveEnemies: aliveCount,
+      })
+      this.particles.spawnBlood(before.x, before.y - 18, 0, -1, 18)
+      // Each kill rumbles the camera a touch — bigger if it's a heavyweight.
+      this.cameraShake = Math.max(this.cameraShake, 0.08 + 0.04 * scale)
     }
   }
 
@@ -311,6 +401,15 @@ export class NetArenaScene extends BaseScene {
       }
       this.stickman.draw(g, this.toRenderable(p))
       this.updatePlayerOverlay(p, isSelf)
+    }
+  }
+
+  private renderObstacles(obstacles: ReadonlyArray<NetObstacle>): void {
+    this.obstacleGraphics.clear()
+    for (const o of obstacles) {
+      // ObstacleRenderer.draw uses only `type, x, y, r, hitFlash` — the rest
+      // of the Obstacle interface is irrelevant. Cast is safe here.
+      ObstacleRenderer.draw(this.obstacleGraphics, o as unknown as Obstacle)
     }
   }
 
