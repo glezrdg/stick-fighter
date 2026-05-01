@@ -96,6 +96,22 @@ export class NetArenaScene extends BaseScene {
   private snap: RoomSnapshot = netClient.getSnapshot()
   private prevState: StateMsg | null = null
 
+  /** Modo del render — controla cómo decidimos cuándo pintar. El server
+   *  tickea 30Hz pero Phaser corre `update()` a 60fps. Pintar el mismo state
+   *  dos veces seguidas en GPUs Adreno se ve como stutter (el ojo detecta
+   *  repetición de frame). Modos:
+   *    - 'state-driven' (default): solo renderizamos cuando llega un state
+   *      nuevo. Cero frames duplicados, cero delay agregado. La opción
+   *      correcta hasta que tengamos interpolación cliente-side (Fase 4).
+   *    - 'cap-fps': cap por tiempo (más simple pero suma 1 frame de latency).
+   *    - 'unlocked': render cada frame Phaser, comportamiento legacy.
+   *
+   *  Override: `?render=cap|unlocked` en query string. Default 'state-driven'. */
+  private renderMode: 'state-driven' | 'cap-fps' | 'unlocked' = 'state-driven'
+  private renderFpsCap = 30
+  private lastRenderTime = 0
+  private lastRenderedTick = -1
+
   // HUD bus events tracking — emit only on change to avoid spamming the bus.
   private lastWave = -1
   private lastGold = -1
@@ -123,6 +139,23 @@ export class NetArenaScene extends BaseScene {
     this.cameras.main.setBounds(0, 0, ARENA.width, ARENA.height)
     this.cameras.main.setZoom(CAM_ZOOM)
     this.cameras.main.centerOn(ARENA.width / 2, ARENA.height / 2)
+
+    // Lectura de `?render=...` y `?fps=N` para tunear el render mode en prod.
+    // Defaults: state-driven (solo render cuando hay state nuevo).
+    if (typeof location !== 'undefined') {
+      const params = new URLSearchParams(location.search)
+      const mode = params.get('render')
+      if (mode === 'cap-fps' || mode === 'unlocked' || mode === 'state-driven') {
+        this.renderMode = mode
+      }
+      const raw = params.get('fps')
+      if (raw) {
+        const parsed = parseInt(raw, 10)
+        if (Number.isFinite(parsed)) this.renderFpsCap = Math.max(10, Math.min(144, parsed))
+      }
+    }
+    this.lastRenderTime = 0
+    this.lastRenderedTick = -1
 
     this.bus.emit('ui:scene:enter', { name: 'arena' })
 
@@ -285,6 +318,22 @@ export class NetArenaScene extends BaseScene {
     // Render from the latest server snapshot.
     const state = this.snap.state
     if (!state) return
+
+    // Skip frames duplicados según el modo. En 'state-driven' (default) solo
+    // pintamos si el server tick cambió — cero frames repetidos sin agregar
+    // latency. En 'cap-fps' usamos un threshold temporal (suma ~1 frame de
+    // delay pero más predictible si el server hicicupea). En 'unlocked'
+    // renderizamos cada frame Phaser (comportamiento legacy, lo que vimos
+    // saltar en Adreno).
+    if (this.renderMode === 'state-driven') {
+      if (state.tick === this.lastRenderedTick) return
+      this.lastRenderedTick = state.tick
+    } else if (this.renderMode === 'cap-fps') {
+      const now = performance.now()
+      const minDelta = 1000 / this.renderFpsCap
+      if (this.lastRenderTime > 0 && now - this.lastRenderTime < minDelta - 1) return
+      this.lastRenderTime = now
+    }
 
     this.diffAndEmit(state)
 
