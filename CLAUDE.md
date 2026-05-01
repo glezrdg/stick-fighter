@@ -81,15 +81,35 @@ Tras smoke real del usuario, varios "checkmarks" del Sprint 3 estaban incompleto
 - **Projectiles en wire**: `NetProjectile { id, type, x, y, vx, vy, ownerId }` + `StateMsg.projectiles`. Server: `ProjectileSystem` recibe `getEnemies` (sin esto las flechas del player no colisionaban). Cliente: `renderProjectiles()` copia 1:1 del SP — arrows con shaft + steel tip + fletching rojo, spears con punta, default orb violeta.
 - **Combat attribution + combo local**: heurística client-side — si self está mid-swing y el enemy <80px (alcance del melee), `attackerId='self'`. Combo local counter + reset timer 1.5s. Solo avanza con hits 'self'. Drives `combo:advance`/`combo:reset` al bus → HUD reactivo.
 
+### Sprint 4.5: Refinement post-smoke ✅ (commit `79c76e3`)
+
+- **Arco F no disparaba**: el server creaba `CombatSystem` SIN `onShoot` callback → `tryShoot` seteaba `bowCooldown` pero la flecha NUNCA spawneaba. Fix: `onShoot: (opts) => this.projectiles.spawn({type:'arrow', ownerId:'player', ...})`. Mismo wiring que SP.
+- **Flechas más lindas**: estela glow dorada (2 circles en gradiente alpha) + sombra elíptica a piso (proyección 22px abajo) + tip highlight (1.2px white nick) + shaft 2.5px. Sin `setBlendMode(ADD)` para mantener render simple.
+- **Enemies con estilo SP completo**: `NetArenaScene.renderEnemies` solo pasaba `color` al StickmanRenderer. SP también pasa `clothing`, `accessory`, `clothingColor` + el `scale` como tercer arg. Fix: pulleamos el `EnemyType` entero del content y populamos todos los campos. Borrado el doble `g.clear()` que pisaba `setPosition` (stickman.draw ya hace clear). Protocol extendido: `NetEnemy.attackDirX/Y` (frozen direction del swing — sin esto el smear giraba con el cuerpo).
+- **Revival logging**: agregamos `console.info` por cada incremento de `killsByPeerSinceDown` para diagnosticar el bug "no revive aunque pase la ronda".
+
+### Sprint 5: Bow visual + revival superviviente ✅ (commit `f992736`)
+
+Tras logs reales del VPS y reportes del usuario:
+
+- **Logs revelaron que revival SÍ se cumple** — `revival 1/3 → 2/3 → 3/3 → revived`. El bug real era el respawn:
+  - Revive con 50% HP exacto donde cayó.
+  - Enemies estaban encima, swings ya en curso conectaban apenas expiren iframes.
+  - 2s de iframes era poco — los `attackTimer` de los enemies sobrevivían.
+- **Fixes en `reviveClient()`**:
+  - `REVIVAL_HP_FRACTION` 0.5 → **0.75** (más buffer).
+  - `REVIVAL_IFRAMES_SEC` 2 → **4** (cubre swings en vuelo).
+  - `REVIVAL_PUSH_RADIUS=100, FORCE=8`: enemies cercanos se empujan en dirección opuesta al player + se cancela su `attackTimer`. Descongestiona el spawn.
+- **Bow no tenía el arco visible**: `NetPlayer` no incluía `bowTimer/bowDuration/bowDirX/Y`. El `StickmanRenderer.drawBowAttack` solo dibuja la pose del arco si `p.bowTimer > 0` → cliente nunca pasaba esos campos al stickman → arco invisible aunque la flecha sí volaba. Fix: protocolo extendido + server populá desde `c.sim.bow*` + cliente los pasa en `toRenderable()`.
+- **Loadout logging al join**: `console.info` con `weapon/skills/owned/skin` por cada cliente que entra. Para diagnosticar el reporte "skills compartidas" — los logs próximos confirmarán si los dos clientes mandan el mismo loadout o si es bug del HUD/render.
+
 ## Bugs conocidos / TODO inmediato
 
 > Estos son bugs reportados por playtest del usuario que NO están todavía cerrados. Si vas a empezar a contribuir, empezá por acá.
 
-- **Flechas se ven feas**: el render copiado de SP es funcional pero estético es pobre. Falta el trail (Phaser `setBlendMode(ADD)` con un leve glow + estela), pulse del tip metal, sombra debajo. Ver `apps/game/src/scenes/NetArenaScene.ts → renderProjectiles()`.
-- **Revival sigue sin cumplirse aunque pase la ronda**: a pesar del fix de Sprint 4, el contador `killsByPeerSinceDown` no parece avanzar consistentemente. Sospecha: `enemy:death` se emite por el sim al matar pero a veces el listener corre antes que el flag de byPlayer se evalúe correctamente. **Necesita diagnóstico server-side** (logs de `c.killsByPeerSinceDown` por tick cuando hay alguien downed).
-- **Skills compartidas entre players**: cuando un cliente equipa skills en su tienda, el OTRO también las tiene. **Causa raíz**: la tienda en SP escribe a `services.save.skills.equipped`. En multi, ambos clientes usan el mismo navegador-save-store si están en el mismo dispositivo. Pero más probablemente: el server no isola los loadouts — necesita verificar que `RoomClient.loadout` por sessionId NO se mezcla. Ver `apps/realtime/src/rooms/StickFightRoom.ts → addClient()`.
-- **Arco no funciona con F**: el `input:shoot` event sí se emite client-side (InputController), pero el botón F no llega al server o el `tryShoot` falla. **Necesita diagnóstico**: ver si el `pendingShoot` flag se setea, si se envía en `sendInput()`, si el server lo procesa en `handleMessage`. Probable: el cliente no está enviando `shoot: true` porque el `pendingShoot` se resetea antes del próximo `update()`.
-- **Estilo de enemies sigue distinto a SP**: ya se corrigió el color, pero los stickmen tienen otros detalles (cuernos para brutes, clothing, etc.) que SP usa desde `getSkin(enemyTypeId)` o similar. **Verificar**: `apps/game/src/scenes/ArenaScene.ts` cómo construye el `StickmanRenderState` para enemies vs `apps/game/src/scenes/NetArenaScene.ts → renderEnemies`.
+- **Skills compartidas entre players** (en investigación): el usuario confirmó que NO es por mismo browser — pasó en dispositivos distintos. El reporte concreto: "Parece que solamente se elije una habilidad". Hipótesis a verificar con los logs nuevos del Sprint 5: (a) ambos clientes envían el mismo loadout en el handshake (bug del cliente al leer save), o (b) cada uno envía distinto pero el HUD muestra mal (bug del render). Comando para diagnosticar: `ssh root@46.202.89.41 "docker logs stick-fighter-realtime --tail 80"` después de un playtest. Buscar las líneas `joined — weapon=… skills=[…]` per cliente.
+- **Estilo de enemies — verificar tras Sprint 4.5**: el fix pasa `clothing`/`accessory`/`scale` al StickmanRenderer. Si el usuario sigue viendo diferencias visuales entre SP y multi, es porque el content de algún `enemyType` JSON tiene clothing/accessory que falta o no está mapeado. Diff manual entre frame de SP y multi para identificar qué tipo se ve distinto.
+- **Revival "instantáneo" — verificar tras Sprint 5**: con 75% HP + 4s iframes + push de enemies, el revivido debería sobrevivir al menos 4s. Si sigue muriendo apenas expiren iframes, considerar: dar invulnerabilidad continua mientras te muevas durante los primeros 4s, o spawn point distinto del downed point (e.g., al lado del peer salvador).
 
 ## Roadmap futuro (después de cerrar bugs conocidos)
 
