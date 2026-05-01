@@ -113,6 +113,16 @@ export class NetArenaScene extends BaseScene {
   private lastRenderTime = 0
   private lastRenderedTick = -1
 
+  /** Posición lerpeada de la cámara, en coordenadas world. En multi el
+   *  player local viene del server a 30Hz; si la cámara hace centerOn de
+   *  esa posición directamente, el WORLD COMPLETO salta cada 33ms (porque
+   *  todo es relativo a la cámara). El ojo percibe stutter aunque los
+   *  actores estén bien. Smoothing → la cámara persigue suavemente y el
+   *  movimiento se siente fluido a 60fps en cualquier device. Init al centro
+   *  del arena en `create()`. */
+  private cameraX = 0
+  private cameraY = 0
+
   // HUD bus events tracking — emit only on change to avoid spamming the bus.
   private lastWave = -1
   private lastGold = -1
@@ -157,6 +167,8 @@ export class NetArenaScene extends BaseScene {
     }
     this.lastRenderTime = 0
     this.lastRenderedTick = -1
+    this.cameraX = ARENA.width / 2
+    this.cameraY = ARENA.height / 2
 
     this.bus.emit('ui:scene:enter', { name: 'arena' })
 
@@ -376,9 +388,21 @@ export class NetArenaScene extends BaseScene {
 
     this.prevState = state
 
-    // Camera follows the local player (or first player if we got booted).
+    // Camera follow con smoothing — clave para que multi se sienta fluido
+    // aunque el server tickee 30Hz. Sin esto cada 33ms la cámara salta a
+    // la nueva posición del player y el WORLD ENTERO se mueve en steps,
+    // lo que el ojo percibe como stutter aunque haya 60fps reales. Smoothing
+    // factor frame-rate-independent: k = 1 - exp(-dt × τ); τ alto = snappy,
+    // bajo = laggier. 14 ≈ 70ms de time constant, sweet spot entre
+    // responsividad y suavidad. Cuando llegamos a Fase 4 (interpolación
+    // global) este smoothing ya no será necesario.
     const me = state.players.find((p) => p.sessionId === this.snap.sessionId) ?? state.players[0]
-    if (me) this.cameras.main.centerOn(me.x, me.y)
+    if (me) {
+      const k = 1 - Math.exp(-dt * 14)
+      this.cameraX += (me.x - this.cameraX) * k
+      this.cameraY += (me.y - this.cameraY) * k
+      this.cameras.main.centerOn(this.cameraX, this.cameraY)
+    }
 
     // Apply + decay the local cameraShake. Phaser's shake() doesn't stack,
     // so we re-arm it as long as we have time left.
