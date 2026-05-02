@@ -1,5 +1,6 @@
 import { type Component, Show, createSignal, onCleanup } from 'solid-js'
 
+import { perfTimings } from '../app/perfTimings'
 import { netClient, type NetTelemetry } from '../net/NetClient'
 
 /**
@@ -26,6 +27,7 @@ interface TelemetryOverlayProps {
 export const TelemetryOverlay: Component<TelemetryOverlayProps> = (props) => {
   const [tel, setTel] = createSignal<NetTelemetry>(netClient.getTelemetry())
   const [fps, setFps] = createSignal(0)
+  const [perf, setPerf] = createSignal(perfTimings.snapshot())
 
   // FPS via requestAnimationFrame — independiente del Phaser game loop para
   // detectar si el render fluyo se interrumpe a nivel browser.
@@ -40,6 +42,7 @@ export const TelemetryOverlay: Component<TelemetryOverlayProps> = (props) => {
 
   const refresh = () => {
     setTel(netClient.getTelemetry())
+    setPerf(perfTimings.snapshot())
     if (frameTimes.length >= 2) {
       const span = (frameTimes[frameTimes.length - 1] ?? 0) - (frameTimes[0] ?? 0)
       const f = span > 0 ? ((frameTimes.length - 1) * 1000) / span : 0
@@ -75,6 +78,31 @@ export const TelemetryOverlay: Component<TelemetryOverlayProps> = (props) => {
     if (p < 2) return '#7fff7f'
     if (p < 5) return '#ffd54a'
     return '#ff8080'
+  }
+
+  /** Color del p95 de un stage. <2ms verde, <5ms amarillo, >=5ms rojo —
+   *  cualquier stage que come >5ms del frame budget de 16.6ms es sospechoso. */
+  const stageColor = (p95: number): string => {
+    if (p95 === 0) return '#666'
+    if (p95 < 2) return '#7fff7f'
+    if (p95 < 5) return '#ffd54a'
+    return '#ff8080'
+  }
+  const fmtMs = (n: number): string => n.toFixed(2)
+  /** Suma de los stages "renderXxx" — útil para ver si todos los renders
+   *  combinados pasan del frame budget aún cuando ninguno individual lo hace. */
+  const totalRender = (): number => {
+    const p = perf()
+    return (
+      p.renderPlayers.p95 +
+      p.renderEnemies.p95 +
+      p.renderProjectiles.p95 +
+      p.renderObstacles.p95 +
+      p.renderGore.p95 +
+      p.renderProps.p95 +
+      p.renderParticles.p95 +
+      p.renderDeathFx.p95
+    )
   }
 
   return (
@@ -121,6 +149,91 @@ export const TelemetryOverlay: Component<TelemetryOverlayProps> = (props) => {
           hidden={tel().lastMsgBytes === 0}
         />
         <Row label="proto" value={`v${tel().netcodeVersion}`} />
+
+        {/* Per-frame timings — solo se muestran cuando hay samples (en el menú
+            todavía no, en el arena sí). Cada row: avg / p95. Si frameTotal p95
+            > 16ms = el frame se está pasando. Si totalRender > frameTotal: GC
+            o algo entre stages. */}
+        <Show when={perf().frameTotal.samples > 0}>
+          <div
+            style={{
+              color: '#888',
+              'margin-top': '6px',
+              'margin-bottom': '2px',
+              'letter-spacing': '1px',
+              'border-top': '1px dashed #333',
+              'padding-top': '4px',
+            }}
+          >
+            ▸ PERF (avg/p95 ms)
+          </div>
+          <Row
+            label="frame total"
+            value={`${fmtMs(perf().frameTotal.avg)} / ${fmtMs(perf().frameTotal.p95)}`}
+            color={stageColor(perf().frameTotal.p95 / 2)}
+          />
+          <Row
+            label="frame Δt"
+            value={`${fmtMs(perf().frameInterval.avg)} / ${fmtMs(perf().frameInterval.p95)}`}
+            color={stageColor(Math.abs(perf().frameInterval.p95 - 16.6) / 2)}
+          />
+          <Row
+            label="apply state"
+            value={`${fmtMs(perf().applyServerMsg.avg)} / ${fmtMs(perf().applyServerMsg.p95)}`}
+            color={stageColor(perf().applyServerMsg.p95)}
+          />
+          <Row
+            label="diffAndEmit"
+            value={`${fmtMs(perf().diffAndEmit.avg)} / ${fmtMs(perf().diffAndEmit.p95)}`}
+            color={stageColor(perf().diffAndEmit.p95)}
+          />
+          <Row
+            label="render players"
+            value={`${fmtMs(perf().renderPlayers.avg)} / ${fmtMs(perf().renderPlayers.p95)}`}
+            color={stageColor(perf().renderPlayers.p95)}
+          />
+          <Row
+            label="render enemies"
+            value={`${fmtMs(perf().renderEnemies.avg)} / ${fmtMs(perf().renderEnemies.p95)}`}
+            color={stageColor(perf().renderEnemies.p95)}
+          />
+          <Row
+            label="render projs"
+            value={`${fmtMs(perf().renderProjectiles.avg)} / ${fmtMs(perf().renderProjectiles.p95)}`}
+            color={stageColor(perf().renderProjectiles.p95)}
+            hidden={perf().renderProjectiles.samples === 0}
+          />
+          <Row
+            label="render obst"
+            value={`${fmtMs(perf().renderObstacles.avg)} / ${fmtMs(perf().renderObstacles.p95)}`}
+            color={stageColor(perf().renderObstacles.p95)}
+          />
+          <Row
+            label="render gore"
+            value={`${fmtMs(perf().renderGore.avg)} / ${fmtMs(perf().renderGore.p95)}`}
+            color={stageColor(perf().renderGore.p95)}
+          />
+          <Row
+            label="render props"
+            value={`${fmtMs(perf().renderProps.avg)} / ${fmtMs(perf().renderProps.p95)}`}
+            color={stageColor(perf().renderProps.p95)}
+          />
+          <Row
+            label="render parts"
+            value={`${fmtMs(perf().renderParticles.avg)} / ${fmtMs(perf().renderParticles.p95)}`}
+            color={stageColor(perf().renderParticles.p95)}
+          />
+          <Row
+            label="render fx"
+            value={`${fmtMs(perf().renderDeathFx.avg)} / ${fmtMs(perf().renderDeathFx.p95)}`}
+            color={stageColor(perf().renderDeathFx.p95)}
+          />
+          <Row
+            label="Σ render"
+            value={`${fmtMs(totalRender())}`}
+            color={stageColor(totalRender() / 2)}
+          />
+        </Show>
       </div>
     </Show>
   )

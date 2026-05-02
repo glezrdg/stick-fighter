@@ -39,6 +39,7 @@ import {
   parseMsg,
 } from '@stick/shared'
 
+import { perfTimings } from '../app/perfTimings'
 import { getValidAccessToken } from '../platform/api'
 
 /**
@@ -580,9 +581,15 @@ class NetClient {
         })
         return
       }
-      case 'state':
+      case 'state': {
+        // Medimos el costo del state apply — incluye reconstructStateMsg
+        // (cache merge en v2) + update() que dispara fan-out a todos los
+        // listeners suscritos. Suele ser el work más caro per-msg.
+        perfTimings.begin('applyServerMsg')
         this.update({ ...this.snap, state: this.reconstructStateMsg(msg) })
+        perfTimings.end('applyServerMsg')
         return
+      }
       case 'peer-left': {
         const left = this.snap.players.find((p) => p.sessionId === msg.sessionId)
         this.update({

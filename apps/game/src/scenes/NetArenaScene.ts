@@ -9,6 +9,7 @@ import type {
 } from '@stick/shared'
 import { ARENA, CAM_ZOOM, type Obstacle } from '@stick/sim'
 
+import { perfTimings } from '../app/perfTimings'
 import { netClient, type RoomSnapshot } from '../net/NetClient'
 import { ApiClient } from '../platform/api'
 import { RunQueue } from '../platform/runQueue'
@@ -321,6 +322,8 @@ export class NetArenaScene extends BaseScene {
   }
 
   override update(_time: number, deltaMs: number): void {
+    perfTimings.recordFrameTick()
+    perfTimings.begin('frameTotal')
     const dt = Math.max(0, Math.min(0.1, deltaMs / 1000))
 
     // Combo timer local (no server-sync): si pasan >1.5s sin pegar, reset.
@@ -378,14 +381,19 @@ export class NetArenaScene extends BaseScene {
       this.lastRenderTime = now
     }
 
+    perfTimings.begin('diffAndEmit')
     this.diffAndEmit(state)
+    perfTimings.end('diffAndEmit')
 
     // Floor + ambient (fans, lamps, dust). Cheap; redraw every frame is fine.
+    perfTimings.begin('renderProps')
     ArenaPropsRenderer.update(this.arenaProps, dt, (lo, hi) => this.rng.float(lo, hi))
     this.arenaPropsGraphics.clear()
     ArenaPropsRenderer.drawFloor(this.arenaPropsGraphics, this.arenaProps)
+    perfTimings.end('renderProps')
 
     // Tick + draw gore (corpses, parts, blood pools) before the live actors.
+    perfTimings.begin('renderGore')
     this.gore.update(dt)
     this.goreFloorGraphics.clear()
     this.gorePartsGraphics.clear()
@@ -398,27 +406,40 @@ export class NetArenaScene extends BaseScene {
     for (const bp of this.gore.getBodyParts()) {
       GoreRenderer.drawBodyPart(this.gorePartsGraphics, bp)
     }
+    perfTimings.end('renderGore')
 
     // Smoothing factor frame-rate-independent — kicks down al ritmo del dt
     // del frame Phaser. Cuando smoothTau=0, k=0 (snap directo, sin lerp).
     const smoothK = this.smoothTau > 0 ? 1 - Math.exp(-dt * this.smoothTau) : 1
 
+    perfTimings.begin('renderObstacles')
     this.renderObstacles(state.obstacles ?? [])
+    perfTimings.end('renderObstacles')
+    perfTimings.begin('renderPlayers')
     this.renderPlayers(state.players, smoothK)
+    perfTimings.end('renderPlayers')
+    perfTimings.begin('renderEnemies')
     this.renderEnemies(state.enemies ?? [], smoothK)
+    perfTimings.end('renderEnemies')
+    perfTimings.begin('renderProjectiles')
     this.renderProjectiles(state.projectiles ?? [], smoothK)
+    perfTimings.end('renderProjectiles')
     this.reapStaleEnemies(state.enemies ?? [])
     this.reapStalePlayers(state.players)
 
     // Tick + draw client-side particles (the only sim that runs locally).
+    perfTimings.begin('renderParticles')
     this.particles.update(dt)
     this.particleGraphics.clear()
     ParticleRenderer.draw(this.particleGraphics, this.particles.getAll())
+    perfTimings.end('renderParticles')
 
     // Death FX (white flash + ring) on top of everything.
+    perfTimings.begin('renderDeathFx')
     this.deathFx.update(dt)
     this.deathFxGraphics.clear()
     DeathFxRenderer.draw(this.deathFxGraphics, this.deathFx.getAll())
+    perfTimings.end('renderDeathFx')
 
     this.prevState = state
 
@@ -436,6 +457,7 @@ export class NetArenaScene extends BaseScene {
       this.cameras.main.shake(50, intensity)
       this.cameraShake = Math.max(0, this.cameraShake - dt)
     }
+    perfTimings.end('frameTotal')
   }
 
   // ----------------------------------------------------------------- diff fx
