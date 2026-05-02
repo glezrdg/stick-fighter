@@ -123,6 +123,27 @@ export class NetArenaScene extends BaseScene {
   private cameraX = 0
   private cameraY = 0
 
+  /** Posiciones de DISPLAY interpoladas por entidad. **Esta es la causa raíz
+   *  del stutter en mobile**: el state.x/y de un entity cambia cada 33ms
+   *  (server tick), pero Phaser renderiza a 60fps. `setPosition(state.x,
+   *  state.y)` dos frames seguidos pasa el mismo valor → el render se
+   *  queda fijo → cuando llega el siguiente state msg, salta 33ms. SP no
+   *  tiene esto porque el sim local mueve `player.x += vx*dt` cada frame
+   *  (60Hz). iPhone disimula con compositing del WebKit; Adreno no.
+   *
+   *  Fix: cada frame perseguimos `state.x/y` con smoothing exponencial
+   *  frame-rate-independent (`k = 1 - exp(-dt × τ)`). Time constant ~30-50ms
+   *  → cuando llega un nuevo state, convergemos en 2-3 frames. Resultado:
+   *  60 frames únicos por segundo, no 30 saltones. Es Fase 4 simplificado
+   *  (sin buffer + timestamps); efectivo y suficiente para co-op 2P. */
+  private playerDisplay = new Map<string, { x: number; y: number }>()
+  private enemyDisplay = new Map<string, { x: number; y: number }>()
+  private projectileDisplay = new Map<string, { x: number; y: number }>()
+  /** Time constant del smoothing en 1/segundos. 25 ≈ ~40ms — converge en
+   *  poco más de 1 server tick (33ms), agrega ~1 frame de lag pero elimina
+   *  el stair-step. Override via `?smooth=N`. */
+  private smoothTau = 25
+
   // HUD bus events tracking — emit only on change to avoid spamming the bus.
   private lastWave = -1
   private lastGold = -1
@@ -163,6 +184,15 @@ export class NetArenaScene extends BaseScene {
       if (raw) {
         const parsed = parseInt(raw, 10)
         if (Number.isFinite(parsed)) this.renderFpsCap = Math.max(10, Math.min(144, parsed))
+      }
+      // Smoothing tunable: ?smooth=N (default 25 = ~40ms time constant).
+      // 0 = sin smoothing (snap directo, comportamiento legacy).
+      // Valores típicos: 15 (cinemático laggy), 25 (default), 40 (snappy),
+      // 100 (casi sin lerp).
+      const smoothRaw = params.get('smooth')
+      if (smoothRaw) {
+        const parsed = parseFloat(smoothRaw)
+        if (Number.isFinite(parsed)) this.smoothTau = Math.max(0, Math.min(200, parsed))
       }
     }
     this.lastRenderTime = 0
@@ -369,10 +399,14 @@ export class NetArenaScene extends BaseScene {
       GoreRenderer.drawBodyPart(this.gorePartsGraphics, bp)
     }
 
+    // Smoothing factor frame-rate-independent — kicks down al ritmo del dt
+    // del frame Phaser. Cuando smoothTau=0, k=0 (snap directo, sin lerp).
+    const smoothK = this.smoothTau > 0 ? 1 - Math.exp(-dt * this.smoothTau) : 1
+
     this.renderObstacles(state.obstacles ?? [])
-    this.renderPlayers(state.players)
-    this.renderEnemies(state.enemies ?? [])
-    this.renderProjectiles(state.projectiles ?? [])
+    this.renderPlayers(state.players, smoothK)
+    this.renderEnemies(state.enemies ?? [], smoothK)
+    this.renderProjectiles(state.projectiles ?? [], smoothK)
     this.reapStaleEnemies(state.enemies ?? [])
     this.reapStalePlayers(state.players)
 
@@ -648,11 +682,18 @@ export class NetArenaScene extends BaseScene {
 
   // ---------------------------------------------------------------- renderers
 
-  private renderPlayers(players: ReadonlyArray<NetPlayer>): void {
+  private renderPlayers(players: ReadonlyArray<NetPlayer>, smoothK: number): void {
     // Re-pintamos las auras de cero cada frame; afectan a todos los players
     // (uno o dos) según su attackTimer activo.
     this.auraGraphics.clear()
-    for (const p of players) {
+    for (const raw of players) {
+      // Smoothing de display position — perseguimos la posición server con
+      // factor k del frame. Sustituimos x/y por las "display" antes de
+      // pasar al resto del render (auras, name labels, HP bars). Así TODO
+      // se mueve consistente, sin que la name label vaya un paso atrás
+      // del stick.
+      const disp = this.smoothPosition(this.playerDisplay, raw.sessionId, raw.x, raw.y, smoothK)
+      const p: NetPlayer = { ...raw, x: disp.x, y: disp.y }
       this.drawPlayerAura(p)
       const isSelf = p.sessionId === this.snap.sessionId
       let g: Phaser.GameObjects.Graphics
@@ -695,10 +736,13 @@ export class NetArenaScene extends BaseScene {
     }
   }
 
-  private renderProjectiles(projectiles: ReadonlyArray<NetProjectile>): void {
+  private renderProjectiles(projectiles: ReadonlyArray<NetProjectile>, smoothK: number): void {
     const g = this.projectileGraphics
     g.clear()
-    for (const p of projectiles) {
+    for (const pRaw of projectiles) {
+      // Idem players/enemies — display position smoothed para fluidez visual.
+      const disp = this.smoothPosition(this.projectileDisplay, pRaw.id, pRaw.x, pRaw.y, smoothK)
+      const p: NetProjectile = { ...pRaw, x: disp.x, y: disp.y }
       const angle = Math.atan2(p.vy, p.vx)
       if (p.type === 'arrow') {
         // Flecha del player: shaft + tip + fletching, con sombra debajo y
@@ -782,8 +826,12 @@ export class NetArenaScene extends BaseScene {
     }
   }
 
-  private renderEnemies(enemies: ReadonlyArray<NetEnemy>): void {
-    for (const e of enemies) {
+  private renderEnemies(enemies: ReadonlyArray<NetEnemy>, smoothK: number): void {
+    for (const eRaw of enemies) {
+      const disp = this.smoothPosition(this.enemyDisplay, eRaw.id, eRaw.x, eRaw.y, smoothK)
+      // Sustituimos x/y por display position para que el enemy se vea fluido
+      // — server entrega 30Hz, render a 60Hz lerpea posiciones.
+      const e: NetEnemy = { ...eRaw, x: disp.x, y: disp.y }
       let g = this.enemyGraphics.get(e.id)
       if (!g) {
         g = this.add.graphics()
@@ -937,6 +985,41 @@ export class NetArenaScene extends BaseScene {
         this.enemyOverlays.delete(id)
       }
     }
+    // Limpia caches de display position — sino crece indefinidamente con
+    // cada wave (cada enemy nuevo agrega entry, ninguna se borra).
+    for (const id of this.enemyDisplay.keys()) {
+      if (!live.has(id)) this.enemyDisplay.delete(id)
+    }
+    // Projectiles también — ya no están en el state, su display cache es stale.
+    const liveProj = new Set<string>()
+    const stateProj = this.snap.state?.projectiles ?? []
+    for (const p of stateProj) liveProj.add(p.id)
+    for (const id of this.projectileDisplay.keys()) {
+      if (!liveProj.has(id)) this.projectileDisplay.delete(id)
+    }
+  }
+
+  /** Smoothing exponencial de display position. Por entity id (sessionId
+   *  para players, id para enemies/projectiles), perseguimos `targetX/Y`
+   *  con factor `k` (frame-rate-independent). Si el entity es nuevo (no
+   *  está en el map), inicializamos en target — sin esto haría un slide
+   *  visible desde la posición previa o desde (0,0) al aparecer. */
+  private smoothPosition(
+    map: Map<string, { x: number; y: number }>,
+    id: string,
+    targetX: number,
+    targetY: number,
+    k: number,
+  ): { x: number; y: number } {
+    const cur = map.get(id)
+    if (!cur) {
+      const fresh = { x: targetX, y: targetY }
+      map.set(id, fresh)
+      return fresh
+    }
+    cur.x += (targetX - cur.x) * k
+    cur.y += (targetY - cur.y) * k
+    return cur
   }
 
   private reapStalePlayers(players: ReadonlyArray<NetPlayer>): void {
@@ -946,6 +1029,9 @@ export class NetArenaScene extends BaseScene {
         g.destroy()
         this.peerGraphics.delete(sid)
       }
+    }
+    for (const sid of this.playerDisplay.keys()) {
+      if (!live.has(sid)) this.playerDisplay.delete(sid)
     }
     for (const [sid, ov] of this.playerOverlays) {
       if (!live.has(sid)) {
@@ -1123,6 +1209,9 @@ export class NetArenaScene extends BaseScene {
       ov.hpFill.destroy()
     }
     this.enemyOverlays.clear()
+    this.playerDisplay.clear()
+    this.enemyDisplay.clear()
+    this.projectileDisplay.clear()
     // Drop la conexión SOLO si la sala ya terminó (error / idle). En gameover
     // o lobby la mantenemos viva para que el flow de "Play Again" pueda usar
     // el room sin recrearlo: GameOverOverlay lee snapshot.code/sessionId para
