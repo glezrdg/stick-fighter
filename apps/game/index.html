@@ -49,10 +49,25 @@
         max-width: 540px;
         margin: 0 auto;
         background: #1a1f24;
+        /* GPU compositing root — necesario para que canvas y HUD se promuevan
+         * a layers GPU separadas. Sin esto, en Chrome Android el compositor
+         * los pinta en el mismo layer y CADA frame del canvas obliga a
+         * re-componer el DOM completo → 10fps efectivos en mid-range Adreno
+         * aunque el JS termine en 5ms. iOS WebKit lo hace solo. */
+        transform: translateZ(0);
+        will-change: transform;
       }
       #game-canvas-container {
         position: absolute;
         inset: 0;
+        /* Promover el canvas a su propia compositor layer. Esto desacopla el
+         * paint del canvas (60fps WebGL) del paint del HUD DOM. El compositor
+         * puede rasterizarlos en threads paralelos en Android igual que iOS. */
+        transform: translateZ(0);
+        will-change: transform;
+        /* Aislar el reflow: el container no provoca recálculo de layout fuera
+         * de sí mismo aunque el canvas dimensione. */
+        contain: layout paint size;
       }
       #hud-root {
         position: absolute;
@@ -60,6 +75,13 @@
         pointer-events: none;
         z-index: 5;
         font-family: 'Russo One', 'Inter', sans-serif;
+        /* HUD también promovido a layer GPU separada — cuando un signal de
+         * Solid actualiza la HP bar, solo se re-paintea esta capa, no el canvas.
+         * Sin esto, cada update reactivo del HUD forzaba composite del frame
+         * entero (canvas incluido) → throttle del rAF en Android. */
+        transform: translateZ(0);
+        will-change: transform;
+        contain: layout paint;
       }
       #hud-root > * {
         pointer-events: auto;
